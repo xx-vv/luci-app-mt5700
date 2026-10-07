@@ -1,5 +1,76 @@
 # Changelog
 
+## [未发布]
+
+### CI 不再向仓库写入构建日志
+
+- **ci(workflow)**: **移除「日志归档（推送构建日志到 ci-logs 分支）」步骤，云编译不再产出 `ci-logs-<fmt>-<arch>` 分支** —— 原步骤（`if: always()` + `continue-on-error: true`）会用 `git checkout --orphan` 创建 `ci-logs-<fmt>-<arch>` 孤儿分支，把 `build.log` / `deps.log` / `ARCH.txt` / `artifacts.txt` 推到该分支并 force push。移除后 Actions 不再向仓库写入任何内容，构建日志仅保留在 Actions 运行日志中（保留期由 GitHub 侧控制）。
+- **ci(workflow)**: 编译 job 由 8 步缩为 **7 步**（检出代码 / 环境准备 / 依赖安装 / 构建执行 / 产物校验·架构一致性 / 产物校验·单包完整性 / 产物归档），发布 job 保持 9 步不变。`permissions: contents: write` 保留 —— 「清理同名旧 Release」与「发布 GitHub Release」仍需该权限，与日志推分支无关。
+- **ci(concurrency)**: 并发组注释同步 —— 原注释列出两条并发风险（`ci-logs-*` 分支 force push 撞 ref CAS、release job 对同一 tag 并发 delete+create），现仅剩后者，故删除 `ci-logs` 相关描述；`concurrency` 配置本身（`group: build-${{ github.sha }}`、`cancel-in-progress: false`）不变。
+- **docs**: 工作流头部注释新增「构建日志：不向仓库写入」说明。
+- **chore(repo)**: 清理远端遗留的历史 `ci-logs*` 分支共 7 个 —— 由上述已移除的步骤产生（3 格式 × 3 架构 + 早期单一 `ci-logs`），现已一并从 `refs/heads/` 移除：`ci-logs`、`ci-logs-{apk,ipk}-{aarch64_cortex-a53,aarch64_generic,x86_64}`。删除远端分支不可逆，日志内容仅存于历史提交中。
+- **note**: v1.14.7 的历史条目（含「日志归档」步骤与 8 步表述）作为版本事实保留不改，仅在必要时追溯；步骤已从当前代码移除。
+
+## v1.14.9 (2026-10-07)
+
+### 「修改 IMEI」按钮与「系统控制」操作条样式对齐
+
+- **style(modem-settings)**: IMEI 卡片的「修改 IMEI」操作由独立按钮行改为复用「系统控制」的 `mt-sysctl-item is-danger` 操作条结构 —— 左侧红点标识 + 操作名 + 风险说明（四重验证确认后执行），右侧红色按钮（min-width 128px），与「恢复出厂设置」操作条的样式、尺寸与排版**完全一致**。
+- **security(scope)**: 仍仅限前端 UI 展示层 —— `imeiEl` 节点、四重验证流程、`AT^PHYNUM` 写入命令与数据流零改动。
+- **docs**: README 版本号与安装示例同步至 v1.14.9；新增 `docs/release-notes/v1.14.9.md` 发布说明。
+
+## v1.14.8 (2026-10-07)
+
+### 「设备标识（IMEI）」卡片排版优化（仅 UI 展示层）
+
+- **style(modem-settings)**: IMEI 卡片排版重构 —— 「当前 IMEI」取值由 `mt5700-inline` 行内提示改为**带边框的取值展示块**（等宽字体放大至 16px、字距加宽、左右分栏 label + value），作为卡片视觉焦点置顶；「修改 IMEI」按钮右对齐独立成行；四重验证说明与法律风险提示作为次级信息移至底部，层级更清晰。
+- **security(scope)**: 本次改动**仅限前端 UI 展示层** —— `imeiEl` DOM 节点、AT+CGSN 读取回填、四重验证流程（Luhn 校验 / 一致性 / 归属验证 / 最终确认）、`AT^PHYNUM` 写入命令与数据流完全未改动；页面加载与验证过程不触发任何 IMEI 写操作。
+- **docs**: README 版本号与安装示例同步至 v1.14.8；新增 `docs/release-notes/v1.14.8.md` 发布说明。
+
+## v1.14.7 (2026-10-07)
+
+### CI 工作流细分化与汉化 + 关闭前端 JS 压缩
+
+- **ci(workflow)**: 构建流程细分为粒度清晰的中文命名步骤 —— 编译 job 拆为「检出仓库代码 → 环境准备 → 依赖安装（Rust 工具链 + zig）→ 构建执行（SDK 编译）→ 产物校验（架构一致性闸门）→ 日志归档 → 产物校验（单包完整性）→ 产物归档」8 步；发布 job 的 9 个步骤全部汉化；workflow 与两个 job 均带中文名称，Actions 页面可直观查看进度与定位问题。
+- **ci(sdk-build)**: `sdk-build.sh` 支持 `SDK_BUILD_PHASE=deps|build|all` 阶段划分 —— 依赖安装（基础工具 + Rust 工具链 + zig）与构建执行（SDK 定位 + 编译 + 产物收集）可分两个容器运行，/opt 工具链经宿主卷跨步骤持久化；`all` 模式保持原有单次完整构建行为兼容。各阶段输出中文横幅（【依赖安装 1/3】…【构建执行 5/5】）。
+- **build(minify)**: **关闭前端 JS 压缩** —— 包级 `Makefile` 设置 `LUCI_MINIFY_JS:=0`（覆盖 luci.mk 默认值，JsMin 变为空操作宏），`sdk-build.sh` 在 .config 中显式写入 `# CONFIG_LUCI_JSMIN is not set`（双保险），并在 defconfig 后校验输出中文确认。构建产物中的 .js 保持未压缩源码，便于线上排查。
+- **docs**: README 版本号与安装示例同步至 v1.14.7；新增 `docs/release-notes/v1.14.7.md` 发布说明。
+
+## v1.14.6 (2026-10-07)
+
+### 「系统控制」区域界面重构与高危操作分级确认
+
+- **style(modem-settings)**: 重构「系统控制」卡片排版 —— 两项操作改为「信息 + 按钮」双栏操作条布局（名称色点标识 + 风险说明 + 右侧固定 128px 按钮），「重启模组」采用新增的**琥珀色警戒级按钮**（`mt5700-btn-warn`），「恢复出厂设置」保持**红色危险级按钮**，视觉层级清晰易区分；操作条分别以琥珀/红色渐变底色与描边区分风险等级。
+- **feat(modem-settings)**: 「重启模组」点击后弹出具中断时长说明的确认弹窗，确认后才下发 `AT^RESET`。
+- **feat(modem-settings)**: 「恢复出厂设置」点击后**连续弹出 3 次警告弹窗**（第 1 步告知配置清空范围 → 第 2 步告知断网后果 → 第 3 步最终高危确认），全部确认后才下发 `AT&F`；任一步取消即中止。
+- **security**: 本次改动仅涉及前端 UI 展示与弹窗交互逻辑，命令下发路径未做任何变更，且默认不会自动触发任何重启/恢复出厂命令。
+- **docs**: README 版本号与安装示例同步至 v1.14.6；新增 `docs/release-notes/v1.14.6.md` 发布说明。
+
+## v1.14.5 (2026-10-07)
+
+### 全站英雄区卡片紧凑化排版
+
+- **style(ui)**: 英雄区卡片（`Mt5700.page` / `mt5700-hero-card`，全站 12 个页面共享）整体紧凑化 —— 内边距 24×28px → **18×24px**，插画区 160×120px → **124×92px**，标题 26px → **21px**，徽标 12px → 11.5px（内边距同步收紧），描述 13.5px → 13px，栅格间隙 24px → 20px，背景光斑 260px → 220px。桌面端英雄区高度由 **170px 降至约 130px**，内容区可视空间显著增加，视觉层级更聚焦于页面主体卡片。
+- **refactor(ui)**: `mt5700-hero-content` 弹性基准 500px → 420px，与缩小的插画区比例协调；移动端（≤768px）竖排自适应规则保持不变。
+- **docs**: README 版本号与安装示例同步至 v1.14.5；新增 `docs/release-notes/v1.14.5.md` 发布说明。
+
+## v1.14.4 (2026-10-07)
+
+### status 页底部卡片栅格修复：消除空位与孤行
+
+- **fix(status)**: 修复 status 页底部双列栅格中 3 卡行产生的**空位与孤行** —— 「连接状态 + 辅载波信号遥测 + 连接诊断」「流量统计 + IP 与 DNS + 调制方式与空间流」两组 3 张卡在 2 列网格中换行，导致连接诊断右侧留空、调制方式与空间流孤行独占，视觉上呈「中间缺卡 + 末尾多卡」。
+- **refactor(status)**: `mt-row-2col` 由 `repeat(auto-fit, minmax(min(100%,460px),1fr))` 改为**确定性 2 列** `repeat(2, minmax(0,1fr))`，与「桌面双列、窄屏单列」设计语义一致；新增 `@media (max-width: 900px)` 降级单列。
+- **feat(status)**: 新增奇数末卡横跨规则 `.mt-row-2col > :nth-child(odd):last-child { grid-column: 1 / -1; }` —— 3 卡行的末卡（连接诊断、调制方式与空间流）自动横跨双列全宽，栅格无空位、卡片均匀对齐，11 张卡片数量不变。
+- **docs**: README 版本号与安装示例同步至 v1.14.4；新增 `docs/release-notes/v1.14.4.md` 发布说明。
+
+## v1.14.3 (2026-10-07)
+
+### 全页面移除「AT 服务在线」连接状态卡片
+
+- **refactor(ui)**: 按需求将「AT 服务在线 / AT 通信服务运行正常」状态卡片（`at-status-card`，含 RPC 地址芯片）从**全部 10 个 LuCI 页面**中移除 —— 删除各页面 render 中的 `connBar` 创建与 `Mt5700.renderConnectionBar()` 调用（dial / modem_settings / network_settings / network_status / scan / schedule / sms_center / sms_settings / terminal / upgrade）。
+- **refactor(ui)**: `mt5700.js` 与 `ui.js` 中的 `renderConnectionBar` 实现统一改为**空操作 stub**（返回隐藏占位节点），任何历史或未来调用均不再渲染任何内容，确保任何页面都不再显示该卡片。
+- **docs**: README 版本号与安装示例同步至 v1.14.3；新增 `docs/release-notes/v1.14.3.md` 发布说明。
+
 ## v1.14.2 (2026-10-03)
 
 ### status 页统一双列布局
