@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.14.12 (2026-10-10)
+
+### 注释语义校正与来源表述清理
+
+- **docs(comment)**: 前端与后端注释按代码实际行为逐条校正，并清除指向历史实现、设计稿与外部工程的来源性表述，使注释自足可读。
+- **docs(frontend-js)**: 全量审查 `htdocs/luci-static/resources/` —— ①移除「原 WebUI / 原前端 / 等价 atx.ts 的 atErrorText」等对照字样共 17 处，涉及 `at-webserver/{ui,parse,smsEncode}.js` 与 `dial / modem_settings / network_settings / scan / schedule / terminal / upgrade` 视图；②清理含「原」字的对照表述共 16 处，涉及 `rpc.js / ui.js / parse.js / mt5700.js / mt5700.css / logs.js / modem_settings.js`；③依据代码实际校正 16 个文件的注释语义（`rpc.js` 的 `_dirty` 与 `uciCommit` 行为、`mt5700.js` 的 `gauge` 返回值与 `BAR_COUNT`、`ui.js` 的 `autoRefresh` 接口、`service.js` 的多源探测与状态枚举、`dial.js` 的自动拨号写入键、`network_status.js` 的双列栅格、`smsEncode.js` 的 134 octets → 67 字符等），并删除 9 个页面头部的版本对照说明。
+- **docs(css)**: 澄清歧义样式注释 —— 将 dangling 设计稿引用与「旧实现」表述改写为自足技术说明。
+- **docs(rust)**: 后端 16 个文件依代码实际校正注释 —— `logger.rs` 输出流为 stderr（`eprintln!`）而非 stdout、syslog 由 init.d 重定向产生；`serialdetect.rs` 去掉版本叙事、说明子串匹配会误判；`serial_linux.rs` 明确读写两半均由 `AsyncFd` 驱动并补 8N1 位域说明；`rpcserver.rs` 修正事件类型清单为 `urc_data / new_sms / incoming_call / pdcp_data / cellscan / raw_data`，补充 `logs / task_status / task_cancel / task_list` 方法；`schedule.rs` 的 `registered` 实际下发 C5GREG / CEREG / CREG；`pdu.rs` 补充 DCS 低 2 位消息类别与 `unpack_septets` 的 LSB-first；`atclient.rs` 的独占 URC 示例改为 RING / +CLIP / +CMTI / ^CEND；`notify.rs` 补全四类通知事件；`state.rs` 修正长命令分支返回语义；`config.rs` 明确 `type_` 回落、`bind` 优先级与 `scan_timeout` 的 UCI 键。
+- **scope**: 仅注释与文档 —— 前后端逻辑、AT 命令流、样式规则与 IMEI 相关代码零改动。后端注释改动经 `cargo check` 通过；前后端差异经「剥离注释放逐字符比对」确认代码完全一致。
+- **verify**: 每一处改动均以 `git diff` 过滤非注释行核验，确认无一行业务代码被修改。
+- **docs**: README 版本号与安装示例同步至 v1.14.12；新增 `docs/release-notes/v1.14.12.md` 发布说明。
+
+## v1.14.11 (2026-10-10)
+
+### 前端样式代码全量审查与清理
+
+- **chore(css)**: 删除已废弃的 `at-status-*` 死样式共 **276 行** —— 该类为「AT 服务状态卡片」组件样式，v1.14.3 已将该卡片从全部 10 个 LuCI 页面移除，但 `mt5700.css` 中的样式层未同步清理。本次删除：主题块 `L1633-L1917`（含 `.at-status-card` / `-icon` / `-title` / `-dot` / `-main` / `-description` / `-rpc*` 与 `is-online / is-connecting / is-offline / is-unknown` 状态变体及各断点响应式）、`@media (max-width)` 内残留单行规则、`@media (prefers-reduced-motion)` 内仅供该组类使用的动画禁用块。全仓库（JS / HTML）对该组类零引用，删除为纯清理，渲染零影响。
+- **style(css)**: 统一缩进风格 —— 运行日志页段（`L3136-L3590`，共 270 行）原为 Tab 缩进，与文件其余 2000 余行的 2 空格风格割裂，本次统一为 2 空格。
+- **docs(css)**: 补充日志页「分层结构」说明注释 —— `.mt5700-logtabs` / `-logtab` / `-logpanel` / `-loglist` / `-logfooter` 等选择器在文件中出现两次（基础层负责尺寸 / 字号 / 字体族 / padding，主题覆盖层负责 background / border / color / opacity），两层属性集基本不重叠、不可单独删除。已在两层起点各加注释说明意图，避免后续被误判为重复代码而误删。同时修正 `--mt5700-temp-*` 的注释（原指向样式块，实际样式层为硬编码取色），并标注 `--mt5700-shadow-*` 为兼容别名。
+- **style(css)**: 修正注释错位 —— 第 2661 行孤立的 `/* 减少动态效果偏好 */` 与下文温度样式块语义无关，予以移除；清理删除操作产生的连续空行。
+- **scope**: 仅前端 CSS 展示层 —— JS 逻辑、AT 命令与 IMEI 相关代码流零改动；`at.css` 经审查无重复定义、无 `!important`，未改动。
+- **verify**: 实机（192.168.10.1）部署验证 —— 修改前后页面渲染输出逐项一致（卡片数 11、指标数 8、关键规则齐全），确认无回归。
+- **docs**: README 版本号与安装示例同步至 v1.14.11；新增 `docs/release-notes/v1.14.11.md` 发布说明。
+
+## v1.14.10 (2026-10-10)
+
+### Argon 主题（2.4.x）兼容修复
+
+- **fix(theme-compat)**: 修复 luci-theme-argon 2.4.8 下模块设置页面两处显示异常（issue #12，@unolejiongg 报告并提供已验证修复样式）：
+  - **开关轨道异常**：Argon 对全局 `input[type=checkbox]` 施加高优先级样式，隐藏了插件开关的自绘轨道，仅剩白色圆形旋钮。在 `mt5700.css` 末尾新增「Argon 主题（2.4.x）兼容覆盖」块，以同等优先级 + `!important` 固定 44×24 轨道尺寸与底色（未选 `--mt5700-border-subtle` / 选中 `--mt5700-accent`），压制主题背景图与 `::after` 伪元素串扰，`::before` 旋钮位移恢复正常。
+  - **下拉框文字偏下被裁切**：Argon 对全局 `select` 的高度与内边距覆盖导致选中项（如 VoNR「关闭」、网卡速率「自动协商」）文字垂直偏移并被裁切。新增 `select.mt5700-select` 覆盖规则：固定 40px 高度、`0 36px 0 12px` 内边距、`line-height: normal`，恢复文字垂直居中。
+- **scope**: 仅前端 CSS 展示层 —— JS 逻辑、AT 命令与 IMEI 相关代码流零改动；其他主题（含 Aurora）显示不受影响。
+- **style(review)**: 复核兼容块发现回归 —— 基础覆盖的 `background !important` 会压掉原有 hover / focus-visible / disabled 规则（无 `!important`），已在兼容块内补充同优先级状态覆盖，恢复悬停反馈、键盘焦点环与禁用态。
+- **docs**: README 版本号与安装示例同步至 v1.14.10；新增 `docs/release-notes/v1.14.10.md` 发布说明。
+
 ## [未发布]
 
 ### CI 不再向仓库写入构建日志

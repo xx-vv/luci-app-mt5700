@@ -6,7 +6,7 @@
 /* global L, baseclass */
 
 /**
- * AT LuCI RPC 客户端（保持原 ATClient 的 API 面）。
+ * AT LuCI RPC 客户端。
  *
  * 传输链路（LuCI RPC，无 WebSocket）：
  *   LuCI JS → L.rpc.declare('mt5700.at'/'mt5700.events') → rpcd → ucode 插件
@@ -14,10 +14,10 @@
  *
  * 语义兼容：
  * - sendCommand(cmd) → {success,data,error}，保持 FIFO 顺序（RPC 逐条应答，前端仍串行化）
- * - subscribe/unsubscribe：事件轮询拉取增量（RPC 为请求-响应模型），推送类型与原 WS 一致：
- *   raw_data / new_sms / incoming_call / pdcp_data / memory_full / cellscan / urc_data
+ * - subscribe/unsubscribe：事件轮询拉取增量（RPC 为请求-响应模型）。订阅者收到的事件类型：
+ *   urc_data（由 raw_data 文本解析而来）/ new_sms / incoming_call / pdcp_data / memory_full / cellscan
  * - 认证：LuCI 登录态由 rpcd 会话/ACL 保证；UCI websocket_auth_key 由 ucode 代理附加，
- *   页面无需输入密钥（原有密钥配置保持兼容）
+ *   页面无需输入密钥（密钥配置保持向后兼容）
  */
 
 // rpcd 对象 mt5700 的方法声明（与 root/usr/share/rpcd/ucode/mt5700.uc 对应）
@@ -187,7 +187,7 @@ ATClient.prototype.pollEvents = function () {
 		var events = Array.isArray(resp.events) ? resp.events : [];
 		self.eventSeq = seq;
 		if (self.firstPoll) {
-			// 首次连接只对齐序号，不重放服务启动前的事件（与原 WS 连接语义一致）
+			// 首次连接只对齐序号，不重放服务启动前的事件（与事件流语义一致）
 			self.firstPoll = false;
 			return;
 		}
@@ -296,8 +296,7 @@ ATClient.prototype.setConnection = function (host, port) {
 
 /* ================= UCI 保存/应用编排 =================
  *
- * 背景（问题一）：本应用原先在页面里直接连续调用
- *     L.uci.set(...) → L.uci.save() → L.uci.apply()
+ * 背景：直接在页面里连续调用 set → save → apply
  * 这条链路存在三个与 OpenWrt 标准「保存及应用」流程不一致的地方：
  *
  *   1) 缺少「未保存更改的确认」。OpenWrt 的 CBI 表单在离开页面时会提示
@@ -317,7 +316,7 @@ ATClient.prototype.setConnection = function (host, port) {
  * uciHasChanges(section)，语义与 LuCI 的「保存并应用」按钮一致。
  */
 var AtUci = {
-	// 已注册「未保存更改」提示的页面数
+	// 当前页面是否有未保存更改（true=有）
 	_dirty: false,
 	_beforeUnload: null,
 	_dirtyFlush: [],
@@ -394,8 +393,8 @@ var AtUci = {
 	},
 
 	/**
-	 * commit 型保存：仅落盘，不触发服务 reload。
-	 * 用于「服务配置」这类自身不作为 reload 触发源、而由页面显式重载的场景。
+	 * commit 型保存：save 后同样调用 apply，走完整 commit+apply 流程
+	 * （与 uciSave 实现一致，会记录 config hash 并触发 procd reload）。
 	 */
 	uciCommit: function (section) {
 		var result = { saved: false, applied: false, appliedSkipped: false };
@@ -547,7 +546,7 @@ function bandName(kind, band) {
  *   - NR 没有 RSSI，第一个数值就是 RSRP，SINR 在 value2、RSRQ 在 value3；
  *   - LTE 前面多一个 RSSI，SINR 在 value3、RSRQ 在 value4（与 NR 相反）。
  *
- * 旧实现把 LTE 当成 <rsrp>,<rsrq>,<sinr> 解析，于是 4G 下 RSRQ 与 SINR 整体
+ * 注意：若把 LTE 当成 <rsrp>,<rsrq>,<sinr> 解析，4G 下 RSRQ 与 SINR 会整体
  * 错位：^HCSQ: "LTE",45,34,106,19 会被解成 RSRP=-106 / RSRQ=-3 / SINR=-16.2，
  * 而按手册应为 RSSI=-76 / RSRP=-106 / SINR=1.2 / RSRQ=-10 —— 真正的 SINR
  * （106 → 1.2 dB）被当成 RSRQ 吃掉，界面上表现为「4G 下 SINR 读不出来」。
@@ -591,7 +590,7 @@ function parseHCSQ(data) {
 		result.rscp = pick(2, convertRssi);
 		result.ecio = pick(3, convertEcio);
 	} else {
-		/* "GSM",<gsm_rssi>，以及未知 / 旧版数字制式的兜底（沿用旧行为） */
+		/* "GSM",<gsm_rssi>，以及未知 / 纯数字制式的兜底 */
 		result.rssi = pick(1, convertRssi);
 	}
 	return result;
@@ -691,7 +690,7 @@ function parsePDCP(fields) {
 	obj.tx_retx_pct = parseInt(fields[11], 10) || 0;
 	obj.rx_volte_bytes = parseInt(fields[12], 10) || 0;
 	obj.tx_volte_bytes = parseInt(fields[13], 10) || 0;
-	obj.downSpeed = obj.rx_rate / 1024;   // Kbps 原始
+	obj.downSpeed = obj.rx_rate / 1024;   // Kbps（原始速率）
 	obj.upSpeed = obj.tx_rate / 1024;
 	return obj;
 }
@@ -709,7 +708,7 @@ function parseMONSC(data) {
 	 *     实测: ^MONSC: NR,460,00,504990,1,C2840C002,80,149002,-65,-10,28
 	 *     RSRP/RSRQ/SINR 为直接工程值（dBm/dB/dB），无需 convert* 换算。
 	 *     与 ^HCSQ: "NR",77,236,31 独立交叉验证一致（77→-63, 236→27.2）。
-	 *   格式 B（旧版，无前导制式，原始编码值）:
+	 *   格式 B（旧编码，无前导制式，直接给出编码值）:
 	 *     ^MONSC: <mcc>,<mnc>,<lac>,<cid>,<pci>,<ch>,<rsrp_raw>,<rsrq_raw>,<sinr_raw>,<sysmode>
 	 */
 	var hasLeadingMode = p.length > 0 && !/^-?\d+$/.test(p[0]);
@@ -722,7 +721,7 @@ function parseMONSC(data) {
 		 * 与 NR 相比：没有 flag 位、PCI/ARFCN/TAC 为十六进制、末位是 RSSI
 		 * （-90~-25 dBm 工程值），且 **没有 SINR 字段**——4G 的 SINR 一律由
 		 * ^HCSQ 兜底补齐（见 network_status 的 needHcsq 逻辑）。
-		 * 旧实现套用 NR 布局，4G 下 cid/pci/channel/rsrp/rsrq 全部错位
+		 * 注意：若直接套用 NR 布局，4G 下 cid/pci/channel/rsrp/rsrq 会全部错位
 		 * （rsrp 取到 rsrq、rsrq 取到 RSSI、channel 变成 "-85"）。
 		 */
 		d = {
