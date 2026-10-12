@@ -2035,6 +2035,9 @@
 }
 
 .mt5700-sms-bubble {
+  /* 宽度必须随内容收缩：否则块级元素会占满 80%，
+     发出的消息靠 margin-left:auto 也「贴不到右边」，看起来与收到的没区别 */
+  width: fit-content;
   max-width: 80%;
   padding: var(--mt5700-space-sm) var(--mt5700-space-md);
   border-radius: var(--mt5700-radius-lg);
@@ -2054,6 +2057,51 @@
   background: var(--mt5700-card-bg);
   border: 1px solid var(--mt5700-border-subtle);
   border-bottom-left-radius: var(--mt5700-radius-sm);
+}
+
+/* ---------- 聊天式时间轴：日期分隔与气泡内时刻 ---------- */
+
+/* 日期条：跨天处居中显示，形如 2026-10-12 */
+.mt5700-sms-date {
+  width: fit-content;
+  margin: var(--mt5700-space-md) auto var(--mt5700-space-sm);
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: var(--mt5700-divider);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--mt5700-text-secondary);
+}
+
+/* 气泡内的时刻：右对齐小字，弱化到不抢正文 */
+.mt5700-sms-time {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  opacity: 0.68;
+  text-align: right;
+}
+
+/* 删除按钮：默认隐去，鼠标移到气泡上才出现 —— 聊天界面里每条消息都挂一颗
+   红按钮会盖过正文本身；触屏设备没有 hover，故常显以免删不掉 */
+.mt5700-sms-del {
+  margin-top: 4px;
+  padding: 1px 8px;
+  font-size: 10px;
+  line-height: 1.6;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.mt5700-sms-bubble:hover .mt5700-sms-del,
+.mt5700-sms-bubble:focus-within .mt5700-sms-del {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .mt5700-sms-del {
+    opacity: 1;
+  }
 }
 
 .mt5700-sms-input {

@@ -10,6 +10,7 @@ mod at_queue;
 mod atclient;
 mod config;
 mod logger;
+mod localtime;
 mod notify;
 mod pdu;
 mod qqbind;
@@ -22,8 +23,11 @@ mod schedule;
 mod serial_linux;
 #[cfg(target_os = "linux")]
 mod serialdetect;
+mod signalgrade;
+mod signalwatch;
 mod state;
 mod state_cfg;
+mod timerpush;
 mod transport;
 mod urc;
 
@@ -31,6 +35,8 @@ use crate::config::Config;
 use crate::notify::Notifier;
 use crate::rpcserver::RpcServer;
 use crate::schedule::Scheduler;
+use crate::signalwatch::SignalWatcher;
+use crate::timerpush::TimerPusher;
 use crate::urc::{Broadcaster, Dispatcher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,6 +71,10 @@ fn rustc_version() -> &'static str {
 
 async fn run(verbose: bool) -> Result<(), String> {
     log_info!("at-webserver {} 启动中 (pid {})", VERSION, std::process::id());
+    // 时间源必须最早初始化：它会按系统时区设置（/etc/TZ → uci）确定本地偏移，
+    // 并写回 TZ 环境变量，供后续 libc / 子进程一致使用。
+    // 必须在 spawn 任何线程之前调用，故放在这里、而非各任务内部懒加载。
+    crate::localtime::init();
 
     let cfg = config::load_config().await;
     if !cfg.enabled {
@@ -150,6 +160,29 @@ async fn run(verbose: bool) -> Result<(), String> {
         let scheduler = scheduler.clone();
         async move { scheduler.run().await }
     });
+    // 定时轮询推送：本模组不会主动上报 ^HCSQ / ^CERSSI，「信号变化通知」开关
+    // 只能靠后端在用户指定时段内主动查询才会生效（时段外不发任何 AT）。
+    let signalwatch_task = tokio::spawn({
+        let watcher = SignalWatcher::new(
+            client.clone(),
+            notifier.clone(),
+            cfg.notification.poll.clone(),
+        );
+        let ctx = ctx_rx.clone();
+        async move { watcher.run(ctx).await }
+    });
+    // 定时推送：按 notify_timer_interval（分钟）周期性推送「当前实际情况」
+    // （信号读数 + 存储用量）。与上面的巡检是两条独立周期线：巡检按「变化阈值」
+    // 决定推不推，这里是到点就推当前状态。
+    let timerpush_task = tokio::spawn({
+        let pusher = TimerPusher::new(
+            client.clone(),
+            notifier.clone(),
+            cfg.notification.timer_interval,
+        );
+        let ctx = ctx_rx.clone();
+        async move { pusher.run(ctx).await }
+    });
     let cache_task = tokio::spawn({
         let cache = cache.clone();
         let ctx = ctx_rx.clone();
@@ -196,6 +229,8 @@ async fn run(verbose: bool) -> Result<(), String> {
         let _ = notify_task.await;
         let _ = dispatch_task.await;
         let _ = sched_task.await;
+        let _ = signalwatch_task.await;
+        let _ = timerpush_task.await;
         let _ = cache_task.await;
         let _ = task_cleanup_task.await;
         let _ = serve_handle.await;
@@ -240,7 +275,8 @@ async fn run_qq_bind(
                 } else {
                     format!("（QQ 号标签: {}）", bind_tag)
                 };
-                let content = format!("[luci-app-mt5700] 绑定成功{}：后续通知将推送到本会话", tag);
+                // 绑定确认消息同样不携带插件名字样，保持与业务通知一致的观感
+                let content = format!("绑定成功{}：后续通知将推送到本会话", tag);
                 match sender.send(&content).await {
                     Ok(()) => log_info!("QQ 绑定确认消息已发送"),
                     Err(e) => log_error!("QQ 绑定确认消息发送失败（不影响绑定生效）: {}", e),
@@ -296,12 +332,39 @@ fn log_config(cfg: &Config) {
     }
 
     log_info!(
+        "自动推送: {}",
+        if cfg.notification.enabled {
+            "已开启（短信/来电/信号/存储满均实时直发，另有定时推送按间隔推送当前状态）"
+        } else {
+            "已关闭（事件只写本地通知日志，不再外发）"
+        }
+    );
+    log_info!(
         "推送开关: 短信={} 来电={} 存储满={} 信号={}",
         on_off(cfg.notification.types.sms),
         on_off(cfg.notification.types.call),
         on_off(cfg.notification.types.memory_full),
         on_off(cfg.notification.types.signal)
     );
+    {
+        let p = &cfg.notification.poll;
+        if p.enabled {
+            let strategy = if p.always {
+                "每次轮询都推送".to_string()
+            } else {
+                format!("仅变化 ≥{:.0} dB 时推送", p.delta)
+            };
+            log_info!(
+                "信号轮询推送: {}~{} 每 {} 秒一次，{}",
+                p.start,
+                p.end,
+                p.interval.as_secs(),
+                strategy
+            );
+        } else {
+            log_info!("信号轮询推送: 未启用");
+        }
+    }
     log_info!("定时锁频: {}", if cfg.schedule.enabled { "启用" } else { "禁用" });
 }
 

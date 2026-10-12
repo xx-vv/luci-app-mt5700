@@ -81,7 +81,7 @@ impl Scheduler {
         let s = self.state.read().await;
         SchedStatusDto {
             current_mode: s.current_mode.clone(),
-            next_switch: next_switch_at(&s.cfg, chrono::Local::now()),
+            next_switch: next_switch_at(&s.cfg, crate::localtime::now()),
             switch_count: s.switch_count,
             applied: s.applied,
         }
@@ -146,7 +146,7 @@ impl Scheduler {
     }
 
     async fn tick(&self) {
-        let now = chrono::Local::now();
+        let now = crate::localtime::now();
         let target = self.target_mode(now).await;
         let want = self.lock_for(&target).await;
 
@@ -216,7 +216,7 @@ impl Scheduler {
     }
 
     /// 当前时刻应该使用的模式，"" 表示不锁频。
-    async fn target_mode(&self, now: chrono::DateTime<chrono::Local>) -> String {
+    async fn target_mode(&self, now: chrono::DateTime<crate::localtime::Tz>) -> String {
         let s = self.state.read().await;
         let night = is_night(&s.cfg, now);
         match (night && s.cfg.night_enabled, !night && s.cfg.day_enabled) {
@@ -321,7 +321,7 @@ impl Scheduler {
         let notifier = self.notifier.clone();
         let content = format!(
             "🔄 定时锁频切换\n时间: {}\n模式: {}\nLTE: {}\nNR: {}\n执行操作: {}\n切换次数: 第 {} 次\n结果: {}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            crate::localtime::now().format("%Y-%m-%d %H:%M:%S"),
             mode,
             lock_summary("LTE", &cfg.lte),
             lock_summary("NR", &cfg.nr),
@@ -331,7 +331,7 @@ impl Scheduler {
         );
         tokio::spawn(async move {
             notifier
-                .notify(Notification { sender: SENDER_SIGNAL.into(), content, kind: NotifyKind::Signal, memory_full: false })
+                .notify(Notification { sender: SENDER_SIGNAL.into(), content, kind: NotifyKind::Signal, memory_full: false, time: crate::notify::now_string() })
                 .await;
         });
         log_info!("定时锁频切换完成: {}（{}）", actions, if lock_ok { "成功" } else { "失败" });
@@ -488,7 +488,7 @@ fn unlock_config() -> LockPair {
     LockPair { lte: BandLock { type_: 0, ..Default::default() }, nr: BandLock { type_: 0, ..Default::default() } }
 }
 
-fn is_night(cfg: &ScheduleConfig, now: chrono::DateTime<chrono::Local>) -> bool {
+fn is_night(cfg: &ScheduleConfig, now: chrono::DateTime<crate::localtime::Tz>) -> bool {
     let (Some(start), Some(end)) = (parse_hhmm(&cfg.night_start), parse_hhmm(&cfg.night_end)) else {
         log_warn!("夜间时段配置无法解析: {:?}-{:?}", cfg.night_start, cfg.night_end);
         return false;
@@ -579,7 +579,9 @@ fn lock_summary(kind: &str, l: &BandLock) -> String {
     }
 }
 
-async fn sleep_ctx(ctx: &tokio::sync::watch::Receiver<bool>, d: Duration) -> bool {
+/// 可被关闭信号打断的睡眠。返回 `false` 表示收到关闭信号，调用方应退出。
+/// 供定时锁频与定时轮询推送（signalwatch）共用。
+pub(crate) async fn sleep_ctx(ctx: &tokio::sync::watch::Receiver<bool>, d: Duration) -> bool {
     let mut ctx_c = ctx.clone();
     tokio::select! {
         _ = tokio::time::sleep(d) => true,
