@@ -30,6 +30,34 @@ function getStr(obj, key) {
 	return v;
 }
 
+/*
+ * 白名单校验客户端传入的 _rid。
+ *
+ * 安全背景（必须过滤，不能信任客户端）：
+ *   _rid 会被拼进临时文件路径与 shell 重定向命令：
+ *     tmp = '/tmp/mt5700-rpc-' + _rid + '.json'
+ *     raw = '... nc 127.0.0.1 < ' + tmp   （经 fs.popen 交给 /bin/sh，root 身份）
+ *   未校验时，任何拥有本插件 ACL 的 LuCI 会话都可以：
+ *     1) 命令注入：_rid = 'x; touch /tmp/pwned; #' → 拼出的 shell 里
+ *        '; ' 分隔出第二条命令，以 root 执行；
+ *     2) /tmp 内文件名注入：写/删到意料之外的文件，配合符号链接
+ *        可能扩大影响。
+ *   因此只接受 [A-Za-z0-9_-]{1,64}；其余一律视为未提供，
+ *   退回服务端生成的唯一号（时间戳 + 自增），功能不受影响。
+ */
+function safeRid(v) {
+	if (v == null) {
+		return null;
+	}
+	if (length(v) == 0 || length(v) > 64) {
+		return null;
+	}
+	if (match(v, /^[A-Za-z0-9_-]+$/) == null) {
+		return null;
+	}
+	return v;
+}
+
 /* 迷你 JSON 解析：ucode 无 s[i]、嵌套函数不提升，用 substr + 前置声明 */
 function jsonParse(s) {
 	let i = 0;
@@ -148,27 +176,6 @@ function jsonParse(s) {
 	return parseVal();
 }
 
-/*
- * 解析承载 5G 流量的网络设备名。
- * 优先 UCI network.MT5700M.device，其次 ifname，都拿不到才退回 eth2。
- * 不硬编码单一设备名，避免不同机型/接口命名下取不到计数。
- */
-function detectModemDevice() {
-	let dev = null;
-	try {
-		const cursor = uci.cursor();
-		dev = cursor.get('network', 'MT5700M', 'device');
-		if (dev == null || dev == '') {
-			dev = cursor.get('network', 'MT5700M', 'ifname');
-		}
-	} catch (e) {
-		dev = null;
-	}
-	if (dev == null || dev == '') {
-		dev = 'eth2';
-	}
-	return dev;
-}
 
 /*
  * 共享工具：给所有 fs.popen 子进程加硬超时的执行器。
@@ -297,6 +304,81 @@ function findNcBin() {
 	return findBinary(['/usr/bin/nc', '/bin/nc', '/usr/sbin/nc', '/sbin/nc']);
 }
 
+/* 在 /sys/class/net 里找第一个挂在 USB 总线上的网卡（与 init.d 的 detect_usb_netdev 同口径）。
+ * 脚本整体用单引号交给 sh -c，保证 timeout 包住的是整个扫描而不只是第一个词。 */
+function detectUsbNetdev() {
+	const script = 'for d in /sys/class/net/*; do n=${d##*/}; '
+		+ 'case "$n" in lo|br-*) continue ;; esac; [ -e "$d/device" ] || continue; '
+		+ 'case "$(readlink -f "$d/device" 2>/dev/null)" in *usb*) echo "NETDEV=$n"; break ;; esac; done';
+	let tbin = findTimeoutBin();
+	let cmd = "/bin/sh -c '" + script + "'";
+	if (tbin != '') {
+		cmd = tbin + ' 3 ' + cmd;
+	}
+	let p;
+	try {
+		p = fs.popen(cmd, 'r');
+	} catch (e) {
+		return null;
+	}
+	if (!p) {
+		return null;
+	}
+	let line = p.read('line');
+	p.close();
+	if (line == null || substr(line, 0, 7) != 'NETDEV=') {
+		return null;
+	}
+	return trim(substr(line, 7));
+}
+
+/* 接口的网卡名（device，其次旧式 ifname）；'@别名' 不是网卡名，视为取不到 */
+function ifaceNetdev(cursor, name) {
+	let dev = cursor.get('network', name, 'device');
+	if (dev == null || dev == '') {
+		dev = cursor.get('network', name, 'ifname');
+	}
+	if (dev == null || dev == '' || substr(dev, 0, 1) == '@') {
+		return null;
+	}
+	return dev;
+}
+
+/*
+ * 解析承载 5G 流量的网络设备名，与 init.d 的承载接口选择同口径：
+ *   1) at-webserver.config.iface_v4 手动指定了接口 → 用该接口的网卡；
+ *   2) 自动扫描（默认）→ 按 sysfs 找挂在 USB 总线上的网卡（承载的可能是固件自带的 wan）；
+ *   3) 退回 MT5700M 接口的网卡，最后才是 eth2。
+ * 不硬编码单一设备名，避免不同机型/接口命名下取不到计数。
+ */
+function detectModemDevice() {
+	let dev = null;
+	let cursor = null;
+	try {
+		cursor = uci.cursor();
+		let name = cursor.get('at-webserver', 'config', 'iface_v4');
+		if (name != null && name != '' && name != 'auto' && match(name, /^[A-Za-z0-9_]+$/)) {
+			dev = ifaceNetdev(cursor, name);
+		}
+	} catch (e) {
+		dev = null;
+	}
+	if (dev == null || dev == '') {
+		dev = detectUsbNetdev();
+	}
+	if ((dev == null || dev == '') && cursor != null) {
+		try {
+			dev = ifaceNetdev(cursor, 'MT5700M');
+		} catch (e) {
+			dev = null;
+		}
+	}
+	if (dev == null || dev == '') {
+		dev = 'eth2';
+	}
+	return dev;
+}
+
 /* 十进制 → 大写十六进制（ucode 无 sprintf('%X') 之外的便捷格式化，自己拼） */
 function toHexUpper(v) {
 	const digits = '0123456789ABCDEF';
@@ -383,6 +465,11 @@ function readCounter(path) {
 function netrateCall(req) {
 	let a = req.args;
 	let dev = getStr(a, 'device');
+	/* device 会拼进 sysfs 只读路径：只接受接口名字符（明确排除 '/'，
+	 * 阻断 ../ 穿越）；非法值忽略并回落自动探测，不报错。 */
+	if (dev != null && dev != '' && match(dev, /^[A-Za-z0-9._@:-]+$/) == null) {
+		dev = null;
+	}
 	if (dev == null || dev == '') {
 		dev = detectModemDevice();
 	}
@@ -591,8 +678,8 @@ function rpcCall(method, params) {
 	 * 唯一性由调用方传入的 _rid 提供；没传时退化为「时间戳 + 自增」，
 	 * 同一秒内的多次调用也能区分（ucode 的 time() 只有秒级）。
 	 */
-	let rid = getStr(params, '_rid');
-	if (rid == null || rid == '') {
+	let rid = safeRid(getStr(params, '_rid'));
+	if (rid == null) {
 		rid = sprintf('%d-%d', time(), rpcFallbackSeq++);
 	}
 	const tmp = '/tmp/mt5700-rpc-' + rid + '.json';
@@ -625,7 +712,9 @@ function rpcCall(method, params) {
 	 * 略大，保证「后端确实在干活」的请求不会被误杀，同时把最坏耗时
 	 * 从「不可控」压缩到 12s。
 	 */
-	let raw = ncBin + ' 127.0.0.1 ' + port + ' < ' + tmp;
+	/* 重定向目标加单引号包裹（纵深防御：rid 已过白名单，这里再挡一层
+	 * 意外引入的空白/元字符拼接问题），busybox sh 支持单引号。 */
+	let raw = ncBin + " 127.0.0.1 " + port + " < '" + tmp + "'";
 	let timedOut = false;
 	if (timeoutBin != '') {
 		raw = timeoutBin + ' ' + RPCCALL_TIMEOUT_SEC + ' ' + raw;
