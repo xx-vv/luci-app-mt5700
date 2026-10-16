@@ -63,6 +63,8 @@ return L.view.extend({
 			carriers: [],
 			rtDown: 0,
 			rtUp: 0,
+			// 本次使用量（由设备侧累计并返回，页面刷新不失效；默认内存、可选落盘）
+			usage: null,
 			ambrDown: 0,
 			ambrUp: 0,
 			networkStatus: '检测中...',
@@ -88,6 +90,8 @@ return L.view.extend({
 			ipv6Cap: { capValue: 0, description: '' },
 			mcs: { dlMod: '', ulMod: '', dlRank: null, ulRank: null, dlMcs: null, ulMcs: null, dlEff: 0, ulEff: 0 },
 			modemInfo: { manufacturer: '', model: '', fw: '', imei: '', imsi: '', iccid: '' },
+			// 签约速率（Session-AMBR，来自 AT+C5GQOSRDP=1）
+			subRate: null,
 			dataBearer: null
 		};
 
@@ -132,7 +136,7 @@ return L.view.extend({
 					svgIcon('signal'),
 					E('span', {}, '信号强度')
 				]),
-				E('span', { 'class': 'mt-pill-tag' }, '5G')
+				E('span', { 'class': 'mt-pill-tag', 'id': 'sig-rat-tag' }, '—')
 			]),
 			E('div', { 'class': 'mt-sig-main-row' }, [
 				E('div', { 'class': 'mt-sig-val-group' }, [
@@ -238,6 +242,45 @@ return L.view.extend({
 						])
 					]),
 					E('div', { 'class': 'mt-traffic-chart-mini', 'id': 'spark-ul-box' })
+				])
+			]),
+			// 本次使用量（设备侧累计：页面刷新不失效，重启后归零；可选持久化）
+			E('div', { 'class': 'mt-traffic-usage' }, [
+				E('div', { 'class': 'mt-usage-head' }, [
+					E('span', { 'class': 'mt-usage-title' }, '本次使用量'),
+					E('div', { 'class': 'mt-usage-actions' }, [
+						E('button', {
+							'class': 'mt-usage-btn', 'id': 'usage-persist', 'type': 'button',
+							'title': '开启后：使用量写入闪存，重启后依然保留（约每 10 分钟写一次）',
+							'click': toggleUsagePersist
+						}, '持久化'),
+						E('button', {
+							'class': 'mt-usage-btn danger', 'id': 'usage-reset', 'type': 'button',
+							'title': '清零本次使用量', 'click': resetUsage
+						}, '清零')
+					])
+				]),
+				E('div', { 'class': 'mt-usage-grid' }, [
+					E('div', { 'class': 'mt-usage-cell' }, [
+						E('span', { 'class': 'mt-usage-lbl' }, '下行'),
+						E('span', { 'class': 'mt-usage-val', 'id': 'usage-dl' }, '0 B')
+					]),
+					E('div', { 'class': 'mt-usage-cell' }, [
+						E('span', { 'class': 'mt-usage-lbl' }, '上行'),
+						E('span', { 'class': 'mt-usage-val', 'id': 'usage-ul' }, '0 B')
+					]),
+					E('div', { 'class': 'mt-usage-cell' }, [
+						E('span', { 'class': 'mt-usage-lbl' }, '合计'),
+						E('span', { 'class': 'mt-usage-val total', 'id': 'usage-total' }, '0 B')
+					]),
+					E('div', { 'class': 'mt-usage-cell' }, [
+						E('span', { 'class': 'mt-usage-lbl' }, '采样时长'),
+						E('span', { 'class': 'mt-usage-val', 'id': 'usage-dur' }, '00:00:00')
+					]),
+					E('div', { 'class': 'mt-usage-cell wide' }, [
+						E('span', { 'class': 'mt-usage-lbl' }, '峰值速率'),
+						E('span', { 'class': 'mt-usage-val', 'id': 'usage-peak' }, '↓0 B/s · ↑0 B/s')
+					])
 				])
 			])
 		]);
@@ -629,6 +672,18 @@ return L.view.extend({
 			return state.hfreqSuccess === false ? 'error' : 'connecting';
 		}
 
+		/* 制式角标短文案：NR→5G、LTE→4G、WCDMA→3G、GSM→2G。
+		 * 与 Mt5700.normRat 同口径，取不到就返回空，由调用方决定占位。 */
+		function ratBadgeText(sysMode) {
+			var s = String(sysMode || '').toUpperCase();
+			if (!s) return '';
+			if (s === 'NR' || s === '7' || s === '11' || s.indexOf('NR') === 0) return '5G';
+			if (s.indexOf('LTE') === 0 || s === '6') return '4G';
+			if (s.indexOf('WCDMA') === 0 || s === '3') return '3G';
+			if (s.indexOf('GSM') === 0 || s === '1') return '2G';
+			return s;
+		}
+
 		function renderSignalUI() {
 			var c = state.cell;
 			var rsrp = c.rsrp;
@@ -657,6 +712,15 @@ return L.view.extend({
 				elPill.style.background = sigUI.bg;
 				elPill.style.color = sigUI.color;
 				elText.textContent = sigUI.text;
+			}
+
+			/* 制式角标与当前驻网制式同源：NR→5G、LTE→4G，不再写死 5G
+			 * （原来写死 '5G'，4G 下也显示 5G，与真实制式不符）。 */
+			var elRatTag = document.getElementById('sig-rat-tag');
+			if (elRatTag) {
+				var primCarrier = (state.carriers && state.carriers[0]) || {};
+				var ratTxt = ratBadgeText(c.sysMode || primCarrier.sysMode);
+				elRatTag.textContent = ratTxt || '—';
 			}
 
 			/* 更新四格信号图标（状态取自真实数据） */
@@ -1129,6 +1193,67 @@ return L.view.extend({
 			}
 		}
 
+		/* 字节量格式化，用于累计使用量。注意与 formatSpeedNumber 区别：
+		   这里的换算单位是 B / KB / MB / GB（已是字节，不再乘 8）。 */
+		function formatBytes(bytes) {
+			var b = Number(bytes);
+			if (!isFinite(b) || b < 0) b = 0;
+			if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
+			if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
+			if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+			return Math.round(b) + ' B';
+		}
+
+		/* 秒 → HH:MM:SS（用于采样时长；起止时间戳均来自设备侧，无浏览器时钟偏差） */
+		function formatUsageDuration(sec) {
+			var s = Math.floor(isFinite(sec) && sec > 0 ? sec : 0);
+			return pad2(Math.floor(s / 3600)) + ':' + pad2(Math.floor((s % 3600) / 60)) + ':' + pad2(s % 60);
+		}
+
+		/* kbps → 人话（用于签约速率）：≥1000 显示 Mbps，否则 Kbps。
+		 * 按十进制换算（102400 kbps = 102.4 Mbps），不做"凑整"处理——
+		 * 模组上报的就是这个值，四舍五入成整数反而与实网不符。 */
+		function formatKbps(kbps) {
+			var v = Number(kbps);
+			if (!isFinite(v) || v <= 0) return '—';
+			if (v >= 1000) {
+				var m = Math.round((v / 1000) * 10) / 10;
+				return m + ' Mbps';
+			}
+			return Math.round(v) + ' Kbps';
+		}
+
+		/* 签约速率文案：有值才显示，没有就如实说明模组未上报 */
+		function subRateText() {
+			var q = state.subRate;
+			if (!q || (!q.dlAmbr && !q.ulAmbr)) return '模组未上报';
+			var ul = formatKbps(q.ulAmbr);
+			var dl = formatKbps(q.dlAmbr);
+			if (q.dlAmbr && q.ulAmbr) return '↑ ' + ul + ' / ↓ ' + dl;
+			return q.dlAmbr ? ('↓ ' + dl) : ('↑ ' + ul);
+		}
+
+		/* 清零本次使用量（设备侧状态一并清空，持久化开关不变） */
+		function resetUsage() {
+			AtWs.usageCtl('reset').then(function (r) {
+				if (r && r.success && r.usage) {
+					state.usage = r.usage;
+					renderSpeedUI();
+				}
+			});
+		}
+
+		/* 切换「持久化」：开启后使用量写入闪存、重启后保留；关闭即删除落盘文件 */
+		function toggleUsagePersist() {
+			var on = !!(state.usage && state.usage.persist);
+			AtWs.usageCtl(on ? 'persist_off' : 'persist_on').then(function (r) {
+				if (r && r.success && r.usage) {
+					state.usage = r.usage;
+					renderSpeedUI();
+				}
+			});
+		}
+
 		function formatSpeedNumber(bytesPerSec) {
 			var bits = bytesPerSec * 8;
 			if (bits >= 1e9) return (bits / 1e9).toFixed(2) + ' Gbps';
@@ -1159,6 +1284,28 @@ return L.view.extend({
 
 			renderMiniSparkline('spark-dl-box', sparkDown, '#38bdf8');
 			renderMiniSparkline('spark-ul-box', sparkUp, '#ec4899');
+
+			/* 本次使用量（设备侧累计，来自 netrate 返回的 usage） */
+			var u = state.usage;
+			var uDl = document.getElementById('usage-dl');
+			if (uDl) uDl.textContent = u ? formatBytes(u.total_rx) : '0 B';
+			var uUl = document.getElementById('usage-ul');
+			if (uUl) uUl.textContent = u ? formatBytes(u.total_tx) : '0 B';
+			var uTot = document.getElementById('usage-total');
+			if (uTot) uTot.textContent = u ? formatBytes(u.total_rx + u.total_tx) : '0 B';
+			var uPeak = document.getElementById('usage-peak');
+			if (uPeak) uPeak.textContent = u
+				? '↓' + formatSpeedNumber(u.peak_rx) + ' · ↑' + formatSpeedNumber(u.peak_tx)
+				: '↓0 B/s · ↑0 B/s';
+			var uDur = document.getElementById('usage-dur');
+			if (uDur) uDur.textContent = (u && u.start_ts && u.last_ts >= u.start_ts)
+				? formatUsageDuration(u.last_ts - u.start_ts)
+				: '00:00:00';
+			var uPersist = document.getElementById('usage-persist');
+			if (uPersist) {
+				if (u && u.persist) uPersist.classList.add('on');
+				else uPersist.classList.remove('on');
+			}
 		}
 
 		function renderTabsUI() {
@@ -1252,6 +1399,7 @@ return L.view.extend({
 				'  <tr><td>SIM 卡状态</td><td>' + simStat + '</td></tr>' +
 				'  <tr><td>运营商代码 (PLMN)</td><td>' + plmnStr + '</td></tr>' +
 				'  <tr><td>网络注册与漫游</td><td>' + roamStr + '</td></tr>' +
+				'  <tr><td>签约速率</td><td>' + subRateText() + '</td></tr>' +
 				'  <tr><td>IMSI</td><td>' + (state.modemInfo.imsi || '读取中...') + '</td></tr>' +
 				'  <tr><td>ICCID</td><td>' + (state.modemInfo.iccid || '读取中...') + '</td></tr>' +
 				'</table>';
@@ -2027,6 +2175,43 @@ return L.view.extend({
 						state.apnCid = ctx.data.cid;
 					}
 				}
+				/* 签约速率只查**数据上网**那条上下文，绝不查 IMS。
+				 * state.apnCid 来自 pickDataContext —— 它已剔除 IMS / 紧急 / MMS / SUPL
+				 * 等专用承载 APN，所以这里拿到的必然是数据通道 CID；
+				 * 万一没解析到，退回 CID 1（默认数据上下文，实机 +CGACT: 1,1 即上网承载）。
+				 *
+				 * 优先用厂商私有命令 AT^DSAMBR（手册 16.17「签约速率查询」）：
+				 * 它 4G/5G 下都能拿到真实的上下行签约速率（kbps）。
+				 * 只有它不返回时，才退回标准命令 AT+C5GQOSRDP（Session-AMBR）。 */
+				var dataCid = state.apnCid || '1';
+				return AtWs.client.sendCommand('AT^DSAMBR=' + dataCid);
+			}).then(function (res) {
+				var q = (res && res.success && res.data) ? Parse.parseDsambr(res.data) : null;
+				if (!q || (!q.dlAmbr && !q.ulAmbr)) {
+					return AtWs.client.sendCommand('AT+C5GQOSRDP=' + (state.apnCid || '1'));
+				}
+				q.source = 'dsambr';
+				state.subRate = q;
+				return null;
+			}).then(function (res) {
+				if (res && res.data) {
+					var q2 = Parse.parseC5gQosRdp(res.data);
+					/* 5QI 1（VoLTE 语音）/ 5（IMS 信令）是 IMS 专用承载的特征值：
+					 * 万一真拿到这种值，说明查到的不是数据上网那条上下文，
+					 * 宁可不显示也不张冠李戴。 */
+					if (q2 && q2.qci !== 1 && q2.qci !== 5 && (q2.ambrUl || q2.ambrDl)) {
+						q2.source = 'qosrdp';
+						state.subRate = {
+							dlAmbr: q2.ambrDl, ulAmbr: q2.ambrUl,
+							apn: state.apn, cid: q2.cid, source: 'qosrdp'
+						};
+					} else {
+						state.subRate = null;
+					}
+				} else {
+					/* DSAMBR 已经给出结果时 res 为 null，无需再动 */
+					if (!state.subRate || state.subRate.source !== 'dsambr') state.subRate = null;
+				}
 				renderTabsUI();
 			}).catch(function (e) {
 				console.warn('loadDeviceInfo error:', e);
@@ -2048,6 +2233,8 @@ return L.view.extend({
 				}
 				var now = Date.now();
 				if (r.device) state.deviceInterface = r.device;
+				/* 本次使用量由设备侧累计（见 mt5700.uc，默认内存、可选落盘），这里只取回展示 */
+				if (r.usage) state.usage = r.usage;
 				if (rateSample && rateSample.device === r.device) {
 					var dt = (now - rateSample.t) / 1000;
 					if (dt >= 0.2) {
@@ -2055,6 +2242,7 @@ return L.view.extend({
 						var dtx = r.tx_bytes - rateSample.tx;
 						state.rtDown = drx >= 0 ? drx / dt : 0;
 						state.rtUp = dtx >= 0 ? dtx / dt : 0;
+
 						rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes, device: r.device };
 						renderSpeedUI();
 						return;
@@ -2062,6 +2250,7 @@ return L.view.extend({
 					return;
 				}
 				rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes, device: r.device };
+				renderSpeedUI();
 			}).catch(function () {});
 		}
 

@@ -151,6 +151,34 @@ try {
 		const tx = Parse.parseTxPower('ERROR');
 		check('TXPOWER 返回 ERROR 时为 null（NR 场景）', tx === null, String(tx));
 	}
+	{
+		// 实机 AT+C5GQOSRDP=1 → +C5GQOSRDP: 1,6,,,,,102400,102400
+		const nr = Parse.parseC5gQosRdp('+C5GQOSRDP: 1,6,,,,,102400,102400\r\nOK');
+		check('C5GQOSRDP (5G) 取签约速率 Session-AMBR', nr && nr.cid === 1 && nr.qci === 6 &&
+			nr.ambrUl === 102400 && nr.ambrDl === 102400, nr ? JSON.stringify(nr) : 'null');
+		check('C5GQOSRDP (5G) 非 GBR 时 GFBR/MFBR 为空', nr && nr.gfbrUl === null && nr.mfbrDl === null,
+			nr ? JSON.stringify(nr) : 'null');
+	}
+	{
+		// 实机 4G 下同一命令 → +C5GQOSRDP: 1,0,,,,,, （5QI=0、速率全空）
+		const lte = Parse.parseC5gQosRdp('+C5GQOSRDP: 1,0,,,,,,\r\nOK');
+		check('C5GQOSRDP (4G) 速率字段为空，不能编造数值', lte && lte.ambrUl === null && lte.ambrDl === null,
+			lte ? JSON.stringify(lte) : 'null');
+	}
+	{
+		check('C5GQOSRDP 无匹配行返回 null', Parse.parseC5gQosRdp('ERROR') === null, 'not null');
+	}
+	{
+		// 手册 16.17 AT^DSAMBR：5G 与 4G 实机均返回 5 个字段（cid,下行,上行,APN,状态）
+		const nr = Parse.parseDsambr('^DSAMBR: 1,2000,3000,"cmiot5g",11\r\nOK');
+		check('DSAMBR (5G) 解析签约速率', nr && nr.cid === 1 && nr.dlAmbr === 2000 && nr.ulAmbr === 3000,
+			nr ? JSON.stringify(nr) : 'null');
+		const lte = Parse.parseDsambr('^DSAMBR: 1,4000,5000,"CMIOT5G.MNC008.MCC460.GPRS",12\r\nOK');
+		check('DSAMBR (4G) 解析签约速率', lte && lte.dlAmbr === 4000 && lte.ulAmbr === 5000 && lte.apn !== '',
+			lte ? JSON.stringify(lte) : 'null');
+		check('DSAMBR 速率为空时不编造', Parse.parseDsambr('^DSAMBR: 1,,\r\nOK').dlAmbr === null, 'not null');
+		check('DSAMBR 无匹配行返回 null', Parse.parseDsambr('ERROR') === null, 'not null');
+	}
 
 } catch (e) {
 	check('单测执行', false, String((e && e.stack) || e));
