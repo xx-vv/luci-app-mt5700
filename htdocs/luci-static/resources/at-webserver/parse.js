@@ -1,7 +1,6 @@
 'use strict';
 'require baseclass';
-/* global AtWs, baseclass */
-
+/* global AtWs */
 /**
  * 补充解析库：运行状态 / 扫频 / USSD / 短信 / 锁频 / 定时锁频 DTO。
  * 各解析函数与 Rust 后端的应答格式严格一致。
@@ -35,7 +34,7 @@ var Parse = (function () {
 		return n;
 	};
 
-	// AT^TXPOWER?
+	// AT^TXPOWER? —— 仅 GUL(2G/3G/4G) 有效；NR 下模组返回 ERROR，需改用 AT^NTXPOWER?
 	api.parseTxPower = function (text) {
 		var match = text.match(/\^TXPOWER:\s*(.+)/);
 		if (!match) return null;
@@ -48,7 +47,8 @@ var Parse = (function () {
 		};
 	};
 
-	// AT^NTXPOWER? 每 5 字段一个载波
+	// AT^NTXPOWER? —— NR 发射功率，最多 4 个载波，每 5 字段一组：
+	// <PPusch>,<PPucch>,<PSrs>,<PPrach>,<Freq(kHz)>，无效值 999（统一交给 power() 归 null）
 	api.parseNrTxPower = function (text) {
 		var match = text.match(/\^NTXPOWER:\s*(.+)/);
 		if (!match) return [];
@@ -63,6 +63,7 @@ var Parse = (function () {
 		}
 		return carriers;
 	};
+
 
 	var REG_STATES = { 0: '未注册，未搜网', 1: '已注册本地网络', 2: '未注册，搜网中', 3: '注册被拒绝', 4: '未知原因', 5: '已注册漫游网络', 8: '仅紧急业务' };
 	var ACT_TYPES = { 10: 'EUTRAN-5GC', 11: 'NR-5GC' };
@@ -115,14 +116,34 @@ var Parse = (function () {
 	};
 
 	// AT+CGPADDR
+	/*
+	 * AT+CGPADDR：一行可携带**多个地址**（双栈时为 IPv4 + IPv6 各一个）。
+	 * 实测：+CGPADDR: 1,"198.51.100.10","32.1.13.184.0.0.0.0.0.0.0.0.0.0.0.1"
+	 * 旧实现每行只取第一个地址，IPv6 会被静默丢弃（页面显示 —）。
+	 * 现解析行内全部引号包裹的地址，分别格式化后逐条返回（cid 相同）。
+	 */
+	/*
+	 * AT+CGPADDR：一行可携带**多个地址**（双栈时为 IPv4 + IPv6 各一个）。
+	 * 实测：+CGPADDR: 1,"198.51.100.10","32.1.13.184.0.0.0.0.0.0.0.0.0.0.0.1"
+	 * 旧实现每行只取第一个地址，IPv6 会被静默丢弃（页面显示 —）。
+	 * 现解析行内全部引号包裹的地址，分别格式化后逐条返回（cid 相同）。
+	 */
 	api.parseCgpaddr = function (text) {
-		return text.split(/\r?\n/)
-			.map(function (line) { return line.match(/\+CGPADDR:\s*(\d+),?\s*"?([^"\r\n]*)"?/); })
-			.filter(function (m) { return m !== null && m[2].trim() !== ''; })
-			.map(function (m) {
-				var fmt = formatPdpAddress(m[2].trim());
-				return { cid: Number(m[1]), address: fmt.address, family: fmt.family };
-			});
+		var out = [];
+		String(text).split(/\r?\n/).forEach(function (line) {
+			var m = line.match(/\+CGPADDR:\s*(\d+)/);
+			if (!m) return;
+			var cid = Number(m[1]);
+			var addrRe = /"([^"]*)"/g;
+			var a;
+			while ((a = addrRe.exec(line)) !== null) {
+				var raw = a[1].trim();
+				if (raw === '') continue;
+				var fmt = formatPdpAddress(raw);
+				out.push({ cid: cid, address: fmt.address, family: fmt.family });
+			}
+		});
+		return out;
 	};
 
 	/* ================= 温度 ================= */
@@ -177,11 +198,6 @@ var Parse = (function () {
 
 	/* ================= IPv6 CAP ================= */
 
-	api.ipv6CapDescription = function (v) {
-		if (v === 0) return '不支持 IPv6';
-		if (v === 1) return '支持 IPv6';
-		return '能力值 ' + v;
-	};
 
 	/* ================= 扫频 ================= */
 
@@ -572,7 +588,7 @@ var Parse = (function () {
 			pos += 2 + Math.ceil(oaLen / 2);
 		}
 		if (pos + 1 >= raw.length) return null;
-		var pid = raw[pos]; pos += 1;
+		pos += 1;  // 跳过 pid 字段
 		var dcs = raw[pos]; pos += 1;
 
 		/*
@@ -950,27 +966,53 @@ var Parse = (function () {
 		return String(text).split(/\r?\n/).map(api.parseCascell).filter(Boolean);
 	};
 
+	/*
+	 * 频点归一化：^HFREQINFO 的 dl_fcn 与 ^MONSSC 的 arfcn 都是字符串，
+	 * 空串会被 Number() 变成 0，进而把 arfcn=0 的辅小区误判成「已匹配」。
+	 * 这里统一把空值/非法值折成 null，让调用方显式处理。
+	 */
+	function normalizeArfcn(value) {
+		if (value === undefined || value === null) return null;
+		var txt = String(value).trim();
+		if (txt === '') return null;
+		var n = Number(txt);
+		return isFinite(n) ? n : null;
+	}
+
 	// 把 ^MONSSC / ^CASCELLINFO 的信号质量对应到 ^HFREQINFO 报出来的某个载波上。
 	api.carrierSignalFor = function (carrier, nr, lte) {
-		var arfcn = Number(carrier.dlFcn);
-		if (!isFinite(arfcn)) return null;
+		if (!carrier) return null;
+		var arfcn = normalizeArfcn(carrier.dlFcn);
+		if (arfcn === null) return null;
+		var nrList = nr || [];
+		var lteList = lte || [];
 		if (carrier.sysMode === 'NR') {
-			var hit = nr.find(function (c) { return c.arfcn === arfcn; });
+			var hit = nrList.find(function (c) { return normalizeArfcn(c && c.arfcn) === arfcn; });
 			return hit
 				? { pci: hit.pci, rsrp: hit.rsrp, rsrq: hit.rsrq, sinr: hit.sinr, measType: hit.measType }
 				: null;
 		}
-		var lHit = lte.find(function (c) { return c.dlArfcn === arfcn; });
+		var lHit = lteList.find(function (c) { return normalizeArfcn(c && c.dlArfcn) === arfcn; });
 		return lHit ? { pci: lHit.pci, rsrp: lHit.rsrp, rsrq: lHit.rsrq, sinr: null, rssi: lHit.rssi } : null;
 	};
 
 	// 找出没能对应到任何载波的辅小区，合并后不把数据悄悄丢掉。
 	api.unmatchedSecondaries = function (carriers, nr, lte) {
 		var arfcns = {};
-		carriers.forEach(function (c) { arfcns[Number(c.dlFcn)] = true; });
+		(carriers || []).forEach(function (c) {
+			var a = normalizeArfcn(c && c.dlFcn);
+			if (a !== null) arfcns[a] = true;
+		});
+		var inList = function (a) { return a !== null && arfcns[a] === true; };
 		return {
-			nr: nr.filter(function (c) { return !arfcns[c.arfcn]; }),
-			lte: lte.filter(function (c) { return c.dlArfcn === null || !arfcns[c.dlArfcn]; })
+			nr: (nr || []).filter(function (c) {
+				var a = normalizeArfcn(c && c.arfcn);
+				return a === null || !inList(a);
+			}),
+			lte: (lte || []).filter(function (c) {
+				var a = normalizeArfcn(c && c.dlArfcn);
+				return a === null || !inList(a);
+			})
 		};
 	};
 
