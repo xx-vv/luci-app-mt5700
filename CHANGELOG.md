@@ -8,6 +8,67 @@
 
 ---
 
+## v1.24.3 (2026-10-17)
+
+### 修复 CI：中间态 commit 不再触发完整构建
+
+- **fix(ci) 陈旧提交跳过**：批量改动若以「一次一个文件」的方式推送，每个文件都是独立 commit，push 事件**逐 commit 触发** —— 一次 19 文件的改动就起了 24 个 run 排队。其中「改了一半」的中间 commit（例如删掉了 `localtime::now_string` 但 `signalwatch` / `urc` 还没改成 `nettime`）编译必然失败，白占 6 个架构矩阵各跑一遍 SDK 编译
+  - 现在 build job 先用 `git ls-remote` 比对分支 HEAD：不是最新的提交**直接跳过**依赖安装 / 构建 / 产物校验 / 归档，release job 同步跳过（否则会因缺产物失败）
+  - tag 推送与手动 dispatch 不受影响（本来就是终态）
+- **note(ci) 并发策略保持不变**：`concurrency` 仍按 `github.sha` 分组且 `cancel-in-progress: false` —— 一次发布会同时产生 main push 与 tag push 两个**同 sha** 的 run，必须串行才能避免 Release 的 delete+create 竞态；改成按 ref 分组会让两者并行，反而踩回老坑
+- **verify 远端代码本身可编译**：拉取 main 最新代码执行 `cargo build --release` —— **通过、零警告**。失败的红叉来自中间态 commit，不是代码缺陷
+- **note(ops)**：已取消本次全部在跑/排队的 run（23 个）
+- **docs**：新增 `docs/release-notes/v1.24.3.md`
+
+## v1.24.2 (2026-10-17)
+
+### NTP 取到即本地计时，20 分钟再同步；失败逐级退避
+
+- **feat(nettime) 同步节奏**：**取到一次之后就本地计时**（`设备时钟 + 偏移`），不再每次取时间都去问服务器 —— `now()` / `now_ts()` / `now_ms()` 全是纯本地计算，零网络开销。稳态下每 **20 分钟**同步一次（24 小时约 72 次，每轮 48 字节请求 / 48 字节应答）
+- **feat(nettime) 失败三级退避**：`3 秒 × 10 次` → `1 分钟 × 10 次` → `20 分钟` 常驻。**任何一次成功都会把连续失败计数清零**，回到 20 分钟节奏
+  - 第一级 3 秒 ×10（约 30 秒窗口）：开机拨号/基站注册往往要十几秒才通，重试次数太少会白白掉到分钟级；
+  - 第二级 1 分钟 ×10（约 10 分钟窗口）：覆盖拨号慢、短暂断网这类分钟级恢复；
+  - 第三级 20 分钟：确认网络长期不可达后的兜底节奏，避免一直每 3 秒空转
+- **refactor(nettime)**：退避档位抽成纯函数 `backoff_for(连续失败次数)`（不碰全局状态，便于单测逐级钉住），`run()` 只维护一个 `CONSECUTIVE_FAILS` 计数器
+- **test**：`cargo test` **197 passed / 0 failed，零警告**（新增 3 条：稳态 20 分钟、退避三级逐级断言含 10 次边界、0 次兜底档）
+- **docs**：README 版本号、安装示例同步至 **v1.24.2**；修正 v1.24.0 发布说明里已过时的「6 小时 / 5 分钟」节奏描述；新增 `docs/release-notes/v1.24.2.md`
+
+## v1.24.1 (2026-10-17)
+
+### 全局时间统一走 nettime（NTP 优先 / 设备时钟回退），时区仍读设备
+
+- **refactor(time) 统一时间源**：插件里凡是「现在几点」的地方一律改走 `nettime` —— 日志时间戳（`logger`）、任务创建时间（`async_runtime`）、短信 PDU 时间兜底（`pdu`）、通知与 URC 时间（`notify` / `urc`）、信号巡检时段判定（`signalwatch::minute_of_day_now`）、定时锁频（`schedule`）。此前这些点各自取 `localtime::now()` / `SystemTime::now()`，NTP 校正后会出现「日志一个时间、通知另一个时间」的两条时间线
+- **note(time) 时区仍然读设备**：`nettime` 只负责**校正 UTC 时刻**（NTP → 设备时钟回退），**时区**依旧沿用 OpenWrt 系统设置（`/etc/TZ` → uci），取不到才回落北京时间 —— 两者正交，`localtime` 收敛为纯时区层（删除了已无人调用的 `now_string` / `minute_of_day_now`）
+- **fix(atclient) 间隔测量改用单调时钟**：长命令「结束于何时」原来用 `SystemTime`（墙上时间）算差值，NTP 校正或手动改时间会让这个差值失真；改为基于 `Instant` 的进程单调毫秒（`mono_ms()`），**耗时/节流/有效期一类间隔一律不碰墙上时钟**
+- **test 源码级回归用例**：新增 `nettime::tests::no_direct_wall_clock_outside_time_modules`，扫描 `src/` 下除 `localtime.rs` / `nettime.rs` 外的所有源文件（剥离注释后匹配），一旦出现 `chrono::Utc::now()` / `chrono::Local` / `SystemTime::now()` 即测试失败 —— 这条约定以后由 CI 兜底，不再靠人记
+- **test**：`cargo test` **194 passed / 0 failed，零警告**（v1.24.0 为 195：删除 `localtime` 已废弃的 2 条用例、新增 1 条回归用例）
+- **docs**：README 版本号、安装示例同步至 **v1.24.1**，新增 `docs/release-notes/v1.24.1.md`
+
+## v1.24.0 (2026-10-17)
+
+### 自动清零改为「每月几号」；新增 NTP 时间源；日志文件大小封顶
+
+- **feat(usage) 按月清零**：自动清零从「累计满 N 天」改为**每月固定几号**（UCI `usage_reset_day`，默认 **1 号**，范围 1~31）。按自然月对账，不再在月里漂移
+- **feat(usage) 支持大小月**：新增 `src/rust/src/monthly.rs` 负责全部日历算术 —— 闰年（能被 4 整除且不被 100 整除，或被 400 整除）、跨年进位、**31 号这类小月没有的日子按当月最后一天触发**（平年 2 月 → 28 号，闰年 → 29 号），不会整月漏清；一个月只清一次
+- **feat(nettime) NTP 时间源**：新增 `src/rust/src/nettime.rs`，依次尝试 **ntp.tencent.com → ntp.aliyun.com → time.cloudflare.com**（UDP 123，NTPv4 客户端），成功即以「NTP 时刻 − 设备时刻」为偏移持续校正；**三个都不可达则回退设备时钟**并在日志页/流量卡提示。时区仍沿用 OpenWrt 系统设置（`/etc/TZ` → uci），**取不到才回落北京时间**
+- **fix(logs) 日志不再无限增长**：新增 `src/rust/src/ringlog.rs`。通知日志文件（`/tmp/at-notifications.log`）原来是纯 append、**没有任何上限**，长期跑会吃满 tmpfs；现在写入前按上限（默认 **256 KiB**，UCI `log_file_max_bytes` 可调）先按行边界裁掉最旧的一半再追加，**绝不切出半行**
+- **refactor(logs) 默认走内存环形缓存**：后端日志缓冲改用 `RingLog`，**条数（1200）+ 总字节（512 KiB）双上限**淘汰 —— 只限条数不够，一条超长 URC/短信正文照样能撑大内存；日志页默认读内存环形缓存，序列化结构不变
+- **refactor 新增独立模块**：`monthly.rs` / `nettime.rs` / `ringlog.rs` 三个新模块各司其职，`usage.rs` 只保留「该不该清」一句调用，未往既有模块里堆逻辑
+- **note(ui)**：流量卡片「自动清零」改为「**每月清零**」+ 「号」，输入范围 1~31；NTP 不可达时卡头显示琥珀色「时间源: 设备时钟」提示（日期可能不准）
+- **note(config) 配置项变更**：`usage_auto_reset_days`（天数）作废，改为 **`usage_reset_day`**（每月几号）。旧键不再读取，升级后自动清零回到默认「每月 1 号」
+- **test**：`cargo test` **195 passed**（基线 165，新增 30 条：`monthly` 12 条覆盖大小月/闰年/跨年/边界，`nettime` 9 条覆盖报文解析与纪元回退，`ringlog` 9 条覆盖双上限与按行裁剪），**零警告**；`tests/parse-regression-test.js` 不受影响
+- **docs**：README 版本号、安装示例同步至 **v1.24.0**，新增 `docs/release-notes/v1.24.0.md`
+
+## v1.23.1 (2026-10-17)
+
+### 修复「自动清零」输入框数字被遮挡 + 前端冗余样式清理
+
+- **fix(usage) 自动清零输入框遮挡**：流量卡片「自动清零」天数输入框里输入的数字显示不全。根因是全局深度美化规则 `input[type="number"] { padding: 8px 14px !important; font-size: 13.5px !important }` 把 `.mt-usage-days` 自己的 `padding: 1px 6px` 整个顶掉 —— 58px 宽减去左右各 14px 内边距后内容区只剩约 27px，4 位数字（最大 3650）直接溢出被裁，再叠加 number 输入框自带的步进箭头（spinner）压在数字上。修复：改用更高特异性选择器 + `!important` 拿回尺寸控制权（宽 72px / padding 2px 8px / 字号 12.5px），隐藏步进箭头（键盘 ↑↓ 与输入仍可用），对齐改为居中避免残余箭头遮挡，并加 `flex: 0 0 auto` 防止被 flex 压缩
+- **refactor(css) 冗余样式清理**：用「类名在全部 JS/uc/模板源码中出现性 + 动态拼接前缀识别」静态审计，删除 mt5700.css 中 64 个死类规则块（旧版 mt5700-* 仪表盘 / verdict / gauge / skeleton / spinner / 裸 modal-* / temp-* 温度着色体系等）与 24 个被后续同选择器规则完全覆盖的重复声明块、7+2 个孤儿 `@keyframes` 与 6 个孤儿 `--mt5700-temp-*` 设计令牌；at.css 删除 3 个死类块。**mt5700.css 5447 → 4919 行（-528 行）**
+- **note(verify) 回归验证**：以 `docs/layout-test/status-mock.html` 为基准，在 380 / 768 / 1024 / 1440 / 1920px 五档视口下对清理前后做全页截图像素对比 —— **差异像素 0**，排版零变化；输入框用 Playwright 实测 `scrollWidth 76 > clientWidth 56`（裁切）修复为 `70 = 70`（无裁切）
+- **note(css)**：样式版本 `MT5700_CSS_VERSION` 升至 **`2.23.1`**，`AT_CSS_VERSION` 升至 **`1.11.1`**（升级后强刷生效）
+- **docs**：README 版本号、安装示例同步更新至 **v1.23.1**，新增 `docs/release-notes/v1.23.1.md`
+
 ## v1.23.0 (2026-10-16)
 
 ### 使用量统计改为后端常驻累计，支持自动清零
