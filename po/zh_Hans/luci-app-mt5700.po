@@ -154,8 +154,8 @@ msgstr "通知日志：查看短信、来电、信号变化等通知记录"
 msgid "移动网络"
 msgstr "移动网络"
 
-msgid "5G 模组管理"
-msgstr "5G 模组管理"
+msgid "MT5700管理"
+msgstr "MT5700管理"
 
 msgid "运行日志"
 msgstr "运行日志"
