@@ -65,6 +65,9 @@ OpenWrt / ImmortalWrt 平台下 MT5700M 5G 模组的全功能控制中心与守�
   <p><sub>图 1：网络状态控制台（展示 AT 通道状态、信号质谱打分及 5G NR 载波聚合参数）</sub></p>
 </div>
 
+<details>
+<summary><b>看板实时状态细节 · Tab 菜单增强 · 信号取数口径（点击展开）</b></summary>
+
 > [!TIP]
 > **Tab 菜单增强**  
 > `admin/modem/5g` 下的 12 个兄弟页面共用 LuCI 原生 Tab 菜单，插件在页面加载后对其做纯 DOM 增强（`at-webserver/tabmenu.js`，不改 LuCI 与主题、不拦截点击）：① **滚动位置保持** —— 横向可滚动主题下切换 / 返回 / 刷新页面后，菜单自动把当前选中项滚入可视区，不再重置到首项；用户手动滚动过的位置按路径记忆在 `sessionStorage`，刷新时选中项仍完整可见则原样恢复，否则回退为选中项居中；② **统一 SVG 图标** —— 12 个页签各配一枚 24×24 线性图标（`stroke=currentColor` 随主题配色，桌面 16px / 窄屏 15px），语义逐项匹配（网络状态=脉冲、网络设置=滑杆、拨号=插头、扫频=雷达、锁频=时钟、模组设置=芯片、升级=圆内上箭头、短信=气泡、短信设置=气泡+省略号、终端=提示符、日志=文件、服务配置=齿轮）。换行布局主题（bootstrap / material）不产生横向滚动，footstrap 等无 Tab 栏主题自动跳过。
@@ -87,6 +90,8 @@ OpenWrt / ImmortalWrt 平台下 MT5700M 5G 模组的全功能控制中心与守�
 > 各字段为编码值（RSRP：`-140 + n` dBm；SINR：`-20 + 0.2n` dB；RSRQ：`-19.5 + 0.5n` dB；RSSI/RSCP：`-121 + n` dBm；Ec/Io：`-32 + 0.5n` dB），`255` 表示未知或不可测，按无数据显示为「—」。
 > `^MONSC` 的 LTE 布局与 NR 不同（无 SINR、末位是 RSSI、PCI/ARFCN/TAC 为十六进制），插件按制式分别解析；信号优先取 `^MONSC` 的驻留小区读数，缺项（典型是 4G 下的 SINR）再由 `^HCSQ` 补齐。
 
+</details>
+
 ---
 
 ## 系统拓扑与数据链路
@@ -102,7 +107,10 @@ OpenWrt / ImmortalWrt 平台下 MT5700M 5G 模组的全功能控制中心与守�
 
 ## 功能矩阵
 
-系统共集成 12 个独立管理页面（源码位于 `htdocs/luci-static/resources/view/at-webserver/`）：
+系统共集成 12 个独立管理页面（源码位于 `htdocs/luci-static/resources/view/at-webserver/`）。
+
+<details>
+<summary><b>功能矩阵：12 个页面的能力明细（点击展开）</b></summary>
 
 | 业务域 | 页面名称 | 核心功能与能力说明 |
 |:--|:--|:--|
@@ -119,11 +127,16 @@ OpenWrt / ImmortalWrt 平台下 MT5700M 5G 模组的全功能控制中心与守�
 | | **运行日志** | 后端环形日志与系统 syslog 的统一入口，分「**运行日志** / **通知记录**」两个页签。运行时日志按**类别细分**：短信 / 拨号 / 网络 / AT / 系统 / 其他（每条挂类别徽章，类别胶囊实时显示条数、点一下就筛），另有关键词搜索、DBG/INF/WRN/ERR 级别、**「仅错误+警告」一键过滤**、来源（后端 / syslog）与条数上限（200 / 400 / 800 / 全部）；跨天插日期分隔条，长正文默认折 3 行、**真的被裁掉才出「展开」**，底部给出「共 N 条 · 错误 / 警告 / 信息 / 调试」统计，导出文件头部附类别与来源。通知记录页保留掉线告警、频段漂移记录，推送通道支持企业微信机器人、QQ 机器人（API v2，富文本卡片 + 内嵌键盘 + 自定义菜单）与 Webhook 实时推送；短信中心占用期间的后台跳过提示已限流（30s 一条）并区分于真失败 |
 | | **服务配置** | 守护进程参数、通信串口绑定、退避重试阈值与自愈巡检开关 |
 
+</details>
+
 ---
 
 ## 数据可信度与取数来源
 
 这个项目有一条贯穿始终的硬规则：**页面上每一个数字都必须能追溯到模组或内核的真实读数**。
+
+<details>
+<summary><b>四条取数硬规则 · 取数来源对照表与统计口径（点击展开）</b></summary>
 
 - **取不到就如实说取不到** —— 显示「—」或「模组未上报」，绝不用 `Math.random` 补一个、也不用别的参数凑一个看起来合理的值；
 - **缺口不连线** —— 信号趋势图某次轮询没读到就记 `null`，绘图时按断点断开，而不是把缺口连成一条并不存在的平滑线；
@@ -168,11 +181,16 @@ OpenWrt / ImmortalWrt 平台下 MT5700M 5G 模组的全功能控制中心与守�
 > **唯一例外**：若累计期间承载网卡计数器归零（接口 flap / 重新拨号），该段增量无法补记，
 > 重新驻网后会从新基线开始累计。峰值速率同理只在有采样的时段内计算。
 
+</details>
+
 ---
 
 ## 架构选型决策流
 
 OpenWrt 的软件包架构标识为 `<base>[_<variant>]` 形式，**包管理系统执行严格的 variant 匹配**：
+
+<details>
+<summary><b>架构判定流程图 · 确认步骤 · 报错速查（点击展开）</b></summary>
 
 ```mermaid
 flowchart TD
@@ -228,18 +246,23 @@ grep OPENWRT_ARCH /etc/openwrt_release
 | `error: uninstallable arch: all` | 语言包架构未被识别 | 实测 apk-tools 3.0.5+ 已兼容，若报错可执行：<br>`echo all >> /etc/apk/arch` |
 | `luci-app-mt5700 (no such package): required by: luci-i18n-...` | 语言包依赖主包，未合并安装 | 将主包与语言包放入同一条 `apk add` / `opkg install` 指令中 |
 
+</details>
+
 ---
 
 ## 安装与快速启动
 
 > ⚠️ **兼容性提醒**：本插件会独占模组串口并直接发送 AT 指令，与 QModem 等同样占用模组串口的插件**不兼容**（完整说明见下方「本插件与 QModem 的关系」）。安装前请先卸载或停用其他占用同一模组串口的插件——拨号交给本插件即可，无需再装 QModem。
 
-#### 本插件与 QModem 的关系
+<details>
+<summary><b>本插件与 QModem 的关系（点击展开）</b></summary>
 
 - 两者都直接占用模组串口、直接下发 AT 指令，**同时运行会互相抢串口**，症状是偶发 `ERROR`、指令超时、拨号状态来回跳；
 - QModem 的「外部控制 / 被动模式」不会解除串口独占，只是少发几条查询指令，仍不能与本插件共存；
 - 想用本插件就**先停用（不是禁用菜单，而是 `stop` 服务或卸载）QModem**，反之亦然。来回切换时先 `service at-webserver stop` 再启另一个；
 - 本插件自己能完成接口创建、拨号、防火墙区域登记与开机自愈，不需要 QModem 配合。
+
+</details>
 
 ### 软件包安装
 
@@ -271,7 +294,8 @@ ls -l /usr/bin/at-webserver-rust
 ubus call service list '{"name":"at-webserver"}'
 ```
 
-### 串口路径选择建议
+<details>
+<summary><b>串口路径选择建议与自动探测优先级（点击展开）</b></summary>
 
 `serial_port` 支持三种取值：`auto`（自动探测）、`/dev/serial/by-id/<链接名>`（**推荐**）、`/dev/ttyUSB*`（回退）。
 
@@ -289,12 +313,17 @@ service at-webserver restart
 
 自动探测的优先级为：`by-id` 稳定链接 → `ttyUSB*`/`ttyACM*`/`ttyAP*` → `ttyS*`/`ttyAMA*`。AT 口识别依次依据**接口名整词匹配**（`PC UI` / `PCUI` / `AT PORT`）与 **`bInterfaceProtocol` 兜底**（`0x12`=PC UI、`0x14`=GPS），后者在 OEM 固件接口名留空时仍能正确认口。
 
+</details>
+
 ---
 
 ## 自动拨号与全链路协同机制
 
 > [!CAUTION]
 > **重要认知**：模组 AT 握手在线并不等同于路由器具备上网能力。数据面打通需跨越软硬件各层级协同。
+
+<details>
+<summary><b>拨号时序图 · 环节职责 · 故障排查速查（点击展开）</b></summary>
 
 <div align="center">
   <img src="docs/auto-dial-sequence.png" alt="MT5700M 5G 模组自动拨号与网络接入时序图" width="880"/>
@@ -325,9 +354,14 @@ service at-webserver restart
 | **一键自愈修复** | `/etc/init.d/at-webserver ensure_interfaces` | 重新校验接口并补全防火墙区域登记 |
 | **手动重试拉起** | `/etc/init.d/at-webserver on_uplink` | 立即重试触发接口 `ifup` |
 
+</details>
+
 ---
 
 ## 开机自启与自愈机制
+
+<details>
+<summary><b>开机自启、procd 守护与双栈解耦（点击展开）</b></summary>
 
 - **后端常驻保护（Rust 服务）**：
   - 由 `/etc/uci-defaults/at-webserver` 与 `postinst` 协同创建软链接 `/etc/rc.d/S99at-webserver`。
@@ -339,9 +373,14 @@ service at-webserver restart
 - **IPv4 / IPv6 双栈解耦**：
   - `MT5700M` 负责 IPv4 核心通路；`MT5700Mv6` 采用 `reqaddress=try` 动态绑定 `@MT5700M` 设备。即便运营商暂未分配 IPv6 前缀，亦绝不阻塞 IPv4 连通性。
 
+</details>
+
 ---
 
 ## UCI 配置参考 (`/etc/config/at-webserver`)
+
+<details>
+<summary><b>完整 UCI 配置项与注释（点击展开）</b></summary>
 
 ```ini
 config at-webserver 'config'
@@ -357,11 +396,16 @@ config at-webserver 'config'
     option cellscan_timeout '180'       # 扫频超时阈值(秒)，最低安全下限 10
 ```
 
+</details>
+
 ---
 
 ## 事件通知配置
 
 事件通知（来电/短信/信号变化/短信存储满）支持两条推送通道 + 本地日志文件。**短信与来电实时直发**（事件一到就发），**信号与存储满同样即时直发**；此外还有一个独立定时器，每到一个间隔就推送一次**当前实际情况**（间隔可配置，单位分钟，默认 10）：
+
+<details>
+<summary><b>通道配置 · 事件类型 · 巡检与推送策略 · QQ 富文本与时间口径（点击展开）</b></summary>
 
 | 通道 | 配置项 | 说明 |
 |:--|:--|:--|
@@ -418,7 +462,7 @@ option notify_poll_delta '3'          # 变化阈值（dB），范围 1-30，仅
 - **基线只在推送时刷新** —— 否则信号从 -80 缓慢漂移到 -95（每次仅差 2 dB）将永远越不过阈值，用户反而收不到「信号持续变差」这个最该知道的通知。
 - **推送内容**：巡检推送携带与网页「射频信号质量」卡片**等价的完整评估** —— 网络能力结论与其场景说明、信号强度 / 信号质量 / 信噪比 / 综合四项评级，以及 RSRP / RSRQ / SINR / SIGNAL 四行「基准 ≥ 阈值 → 实测值 → 结论」对照。标题给出网络代际（`5G` / `4G`），另有「频段」行给出具体频段号与带宽（如 `n41 · 2565 MHz / 100 MHz`，取自 `AT^HFREQINFO?` 的 `<band>`）。只报一个 RSRP 数字不足以判断链路是否真的可用。
 
-### 定时推送间隔与自定义文案
+### 定时推送间隔、文案模板与占位符
 
 - **定时推送间隔**：`notify_timer_interval` 单位是**分钟**，取值 1~1440（1 分钟 ~ 24 小时），越界会被自动夹取，默认 **10 分钟**。每到一个间隔后端就推送一次**当前实际情况**（最新信号读数 + 短信存储占用），不再看窗口内有没有事件 —— 这一轮风平浪静也照发。
 - **间隔怎么选（权衡）**：间隔越短，状态越新鲜，但推送条数越多、越容易打扰，也更容易撞上 QQ 官方主动消息频控；间隔越长越安静，可**两次之间发生的变化只能等到下一个整点才被看到**，且单次推送要承载的内容更满（状态快照含信号与存储两块），读起来更费劲。日常建议 5~30 分钟；只在需要长期静默时才调到小时级。
@@ -435,6 +479,19 @@ option notify_poll_delta '3'          # 变化阈值（dB），范围 1-30，仅
 | `{time}` | 事件发生时刻 |
 | `{kind}` | 事件类型（`新短信` / `来电` / `信号变化` / `存储空间已满`） |
 | `{count}` | 合并消息条数（仅全局前缀与批量标题有意义） |
+
+未知占位符会原样保留，便于发现拼写错误。默认文案为：
+
+```uci
+option notify_tpl_prefix ''                 # 全局前缀，每条推送首行；如 '[MyRouter] {time}'
+option notify_tpl_sms    '喵呜～，有新短信到啦！快来看看是谁给你发消息了喵~\n发送者: {sender}\n内容: {content}'
+option notify_tpl_call   '喵呜～有电话打进来啦，快接起来看看是谁找你喵！\n{content}'
+option notify_tpl_signal '{content}'
+option notify_tpl_memory '喵呜～短信存储空间已经满啦，请尽快清理一下喵，不然可能收不到新的短信了哦！'
+option notify_tpl_batch  '喵～有一批新通知需要查看哦，快来看看都有哪些消息吧！'
+```
+
+UCI 单个 option 不支持真实换行，模板中的换行以 `\n` 转义写入（LuCI 页面会自动转换，手改 UCI 需自行写 `\n`）。
 
 ### QQ 富文本推送、内嵌键盘与自定义菜单
 
@@ -468,19 +525,6 @@ v1.28.0 起 QQ 推送不再只有纯文本。所有 QQ 机器人能力（鉴权�
 | 定时状态 | 网络状态表 + 短信存储段 + 页脚 | 版式固定（代码渲染） |
 
 两条排版约定（均经实机 QQ 验证）：分隔线一律用**空行包裹**的 `---`（CommonMark 中紧随段落的 `---` 会被当作 setext 二级标题下划线，把上文段落变成标题）；页脚用*斜体*（QQ Markdown 不支持 `<sub>` 等 HTML 标签，已实测确认）。短信卡片留空 = 内置默认卡片；写成 `{body}` 可改回通用转换（不加卡片版式）。
-
-  未知占位符会原样保留，便于发现拼写错误。默认文案为：
-
-```uci
-option notify_tpl_prefix ''                 # 全局前缀，每条推送首行；如 '[MyRouter] {time}'
-option notify_tpl_sms    '喵呜～，有新短信到啦！快来看看是谁给你发消息了喵~\n发送者: {sender}\n内容: {content}'
-option notify_tpl_call   '喵呜～有电话打进来啦，快接起来看看是谁找你喵！\n{content}'
-option notify_tpl_signal '{content}'
-option notify_tpl_memory '喵呜～短信存储空间已经满啦，请尽快清理一下喵，不然可能收不到新的短信了哦！'
-option notify_tpl_batch  '喵～有一批新通知需要查看哦，快来看看都有哪些消息吧！'
-```
-
-  UCI 单个 option 不支持真实换行，模板中的换行以 `\n` 转义写入（LuCI 页面会自动转换，手改 UCI 需自行写 `\n`）。
 
 ### 推送自检（测试推送）
 
@@ -525,19 +569,29 @@ option notify_tpl_batch  '喵～有一批新通知需要查看哦，快来看看
 - **鉴权**：`POST https://api.bot.qq.com/app/getAppAccessToken` 换取 `access_token`（7200 秒），服务自动缓存并在过期前 120 秒刷新。
 - **已知限制**：本服务为单向推送、不连 WebSocket，所有消息均为**主动消息**（不带 `msg_id`），受官方频控约束（群 30~60 条/分钟、单关系 20 条/分钟、1000 条/群/天，未认证/认证档不同），且 QQ 用户关闭「允许主动发送」后推送会失败；频道主动推送官方要求机器人保持 WebSocket 在线，`channel` 模式可能被平台拒绝。默认 10 分钟的定时推送间隔（每天 144 条）远低于上述频控；若把间隔调到 1 分钟（每天 1440 条），请先确认不会撞上限。
 
+</details>
+
 ---
 
 ## 更新日志
 
-版本历史见 **[CHANGELOG.md](CHANGELOG.md)**（按版本倒序，含每次改动的动机与实机验证结论）。
+版本历史见 **[CHANGELOG.md](CHANGELOG.md)**（按版本倒序）。
+
+<details>
+<summary><b>更新日志与各版本发布说明（点击展开）</b></summary>
 
 每个版本另有独立的发布说明，放在 [`docs/release-notes/`](docs/release-notes/) 下，命名规则为 `v<版本号>.md`，内容偏「这次为什么改、怎么验的」；升级前建议先读对应版本的那一篇。
 
 更早的版本说明见 [`docs/release-notes/`](docs/release-notes/) 目录全量列表。
 
+</details>
+
 ---
 
 ## 源码目录结构
+
+<details>
+<summary><b>源码目录树（点击展开）</b></summary>
 
 ```
 luci-app-mt5700/
@@ -564,11 +618,16 @@ luci-app-mt5700/
 └── .cnb.yml                                # CNB 云编译流水线（3 架构 × apk/ipk，见下方「云编译与发布」）
 ```
 
+</details>
+
 ---
 
 ## 本地测试
 
-提交前建议按下面三档跑一遍（全部不依赖硬件，mock 模组用 TCP 模拟 AT 口）：
+提交前建议按下面三档跑一遍（全部不依赖硬件，mock 模组用 TCP 模拟 AT 口）。
+
+<details>
+<summary><b>三档测试命令与用例说明（点击展开）</b></summary>
 
 ```sh
 # 1) Rust 后端单测（含 AT 队列并发、PDU 编解码、按月清零、短信归档等）
@@ -589,11 +648,16 @@ node simulate-push.js                       # 推送链路 / 时区 / 定时推�
 `cause` 这类字段是「后端先出结论、ucode 次之、前端最宽」这套分层预算的判据，
 丢了它，一次后端超时就会被计进模组失败熔断。
 
+</details>
+
 ---
 
 ## 云编译与发布
 
-本仓库与 GitHub 镜像仓库**各自触发、各自发布**，构建逻辑共用同一份脚本 [`scripts/sdk-build.sh`](scripts/sdk-build.sh)——两边只在「谁触发、发到哪」上不同：
+本仓库与 GitHub 镜像仓库**各自触发、各自发布**，构建逻辑共用同一份脚本 [`scripts/sdk-build.sh`](scripts/sdk-build.sh)——两边只在「谁触发、发到哪」上不同。
+
+<details>
+<summary><b>流水线分工、构建矩阵与断言闸门（点击展开）</b></summary>
 
 | | 本仓库（CNB） | GitHub 镜像仓库 |
 |:--|:--|:--|
@@ -602,12 +666,12 @@ node simulate-push.js                       # 推送链路 / 时区 / 定时推�
 | 正式发布 | `main` 分支 push 或手动 `api_trigger`，推 CNB Release | `main` push / `v*` 标签 / `workflow_dispatch`，推 GitHub Release |
 | 构建脚本 | `scripts/sdk-build.sh`（同一份） | `scripts/sdk-build.sh`（同一份） |
 
-两边的矩阵与断言一致：
-
 - **系统覆盖**：针对 `25.12.5` 自动构建 `apk`；针对 `24.10.8` 自动构建 `ipk`。
 - **架构矩阵**：全量覆盖 `x86_64`、`aarch64_cortex-a53`、`aarch64_generic`（共计 6 套构建组合）。
 - **硬性断言防御**：构建阶段比对 SDK 输出的 `CONFIG_TARGET_ARCH_PACKAGES` 与矩阵架构标识，不一致立即阻断并硬失败，确保产物元数据绝对精确。
 - **汇总闸门**：汇总阶段看不到 6 个主包就拒绝发布，不留「流水线绿了但附件不在」的缝；发布随包附 `ARCH-GUIDE.txt`。
+
+</details>
 
 本仓库的版本号取自 `Makefile` 的 `PKG_VERSION`，不用 tag 名，所以日常推送会刷新同版本 Release，不会越推越乱。
 
@@ -615,12 +679,17 @@ node simulate-push.js                       # 推送链路 / 时区 / 定时推�
 
 ## 问题反馈
 
-提 Issue 走**本仓库**（CNB）即可，GitHub 镜像仓库也开着 Issues，两边维护者相同：
+提 Issue 走**本仓库**（CNB）即可，GitHub 镜像仓库也开着 Issues，两边维护者相同。
+
+<details>
+<summary><b>提 Issue 的渠道与需附信息（点击展开）</b></summary>
 
 - **本仓库**：仓库页 → Issues → 新建，适合贴设备型号、固件版本、`ubus call service list '{"name":"at-webserver"}'` 输出与日志片段；
 - **GitHub 镜像仓库**：[Issues](https://github.com/LianXia233/luci-app-mt5700/issues)，适合已经有 GitHub 账号、想顺带参与上游讨论的场景。
 
 反馈 AT 相关问题请附：模组型号与固件版本（`AT+CGMR`）、出问题的页面、复现步骤，以及能取到的最小原始报文（AT 终端页的收发记录，注意脱敏 IMEI / ICCID / 手机号）。日志走 `/var/log/at-webserver*`，重启即失，请先拷贝出来再重试。
+
+</details>
 
 ---
 
@@ -631,6 +700,9 @@ node simulate-push.js                       # 推送链路 / 时区 / 定时推�
 ### 1. 开源许可证
 
 本项目以 **GNU General Public License v3.0** 发布，项目代码的使用、复制、修改及分发均须遵守该许可证条款。完整条款见仓库根目录 [`LICENSE`](LICENSE)。
+
+<details>
+<summary><b>许可信息表与分发义务（点击展开）</b></summary>
 
 | 项目 | 内容 |
 |:--|:--|
@@ -648,7 +720,10 @@ node simulate-push.js                       # 推送链路 / 时区 / 定时推�
 
 仅在本机安装、使用而不对外分发时，不触发上述义务。
 
-### 2. 看板娘角色版权声明
+</details>
+
+<details>
+<summary><b>2. 角色素材与第三方知识产权（点击展开）</b></summary>
 
 本项目界面中使用的看板娘角色「薄荷」（Mint），为游戏《异环》（NTE / Neverness to Everness）中的登场角色，相关素材的权利归属如下。
 
@@ -670,6 +745,8 @@ GPL-3.0 许可证仅适用于本项目有权以该许可证发布的代码及相
 角色素材以**聚合（aggregate）**形式与本项目代码一并打包分发（GPLv3 第 5 条末段），其权利状态不因打包、也不因本项目采用 GPL-3.0 而发生改变。对上述内容的使用、复制、修改或再分发，须遵守相关权利人的授权条件及适用法律法规。
 
 逐项清单、权利人、素材指纹与来源说明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+
+</details>
 
 ### 4. 名称与商标
 
