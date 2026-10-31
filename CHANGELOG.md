@@ -8,6 +8,78 @@
 
 ---
 
+## v1.30.9（2026-10-31）
+
+### refactor 前端审查整理：修掉回调累积、收敛重复解析、清掉不可达样式
+
+> 对照三份独立审查的结论逐条复核后落地。核心不是「删得多」，而是先证明「删了不改变任何计算样式」—— 全部 CSS 改动都用无头浏览器在同一 DOM 上做过改动前后 `getComputedStyle` 全属性 + 像素比对（5 个视口 × 31 个真实嵌套元素：**差异 0 项、差异像素 0**）。审查里被列为「可删」的 15 个类名经实测其实仍在用（`mt-mid-grid`、`mt-anime-empty-svg`、`mt-anime-mint-svg`、`mt-constellation-svg`、`mt-mimo-svg`、`mt-mcs-visual-grid` 各有实际产出点），一律保留。
+
+- **fix(ui) 连接状态回调在离场时注销**：`ATClient` 是全页面单例，`stateCallbacks` 只增不减，而 `Ui.startup()` 每次进页面都注册一个捕获本页 `body` 与 `onReady` 的闭包 —— 切入一次留一个，切得越多留得越多，每次状态变化还要把这些死页面的回调跑一遍。新增 `ATClient.offConnectionStateChange(cb)`（与既有 `subscribe/unsubscribe` 对称），`startup` 与 `degradedNotice` 都在 `Ui.onLeave` 里按同一函数引用注销，并顺带摘掉 `resize` 监听与提示条 DOM
+- **refactor(parse) NDISSTAT 解析收口**：拨号页判「是否已拨上」与扫频页判「扫频会断网，需二次确认」各写了一份 `^NDISSTATQRY:\s*1\s*,\s*(\d+)`。同一条口径两处维护，改一处漏一处就是「拨号页说已连、扫频页说没连」。新增 `Parse.parseNdisStat(text)`（返回第二字段，无回包返回 `null`），两个视图改为调用它，正则只剩一份
+- **refactor(parse) 移除零引用的 `modeText` 导出**：`schedule.js` 另有一份语义更完整的本地 `modeText`，`Parse.modeText` 全仓零调用
+- **chore(css) 删除不可达规则与空媒体查询**：`mt5700.css` 删 8 条 `.mt5700-gauge-caption.*`、`.mt5700-chart-tip.show`、`.mt5700-tab.active`（注意区分仍在用的 `.mt5700-table`）与 5 个空 `@media`；`at.css` 删空规则 `.at-modal-body`。空块与空规则在规范层面即为 no-op
+- **chore(css) 从选择器列表摘除旧类名别名**：早期短前缀改名时，`mt-*` 旧名以逗号别名形式与 `mt5700-*` 并列留了下来（`mt-hero-*`、`mt-badge-*`、`mt-row-2col`/`mt-2col`/`mt-form-row`、`mt-root-wrap`），`mt5700-grid-3/4`、`mt5700-gauge`、`mt5700-speed-box`、`mt5700-readonly`/`mt5700-raw-panel` 同样只在选择器列表里挂名。**只摘 token，规则本体与其余选择器的行为一字不动**
+- **chore(cache) 两处版本戳**：`MT5700_UI_VERSION` 1.30.0 → **1.30.9**（注释写明须与 `PKG_VERSION` 同步，实际落后 9 个版本，`?v=` 换不掉旧模块）；`MT5700_CSS_VERSION` 2.46.0 → **2.46.1**、`AT_CSS_VERSION` 1.15.0 → **1.15.1**（uhttpd 对静态资源恒给 1970 的 `Last-Modified`，不换版本号用户刷新也拿不到新样式）
+- **test(ui) 新增 `tests/ui-lifecycle-test.js`（10 项）**：用 DOM 桩跑真实 `ui.js`，断言「切页 5 次后回调数不增长」与「离场钩子执行后回调归零」；并逐例比对 `parseNdisStat` 与原正则的 13 组输入结果一致
+- **test(sms) 补齐渲染测试的 `Ui.onLeave` 桩**：`sms-center-render.js` 的 `Ui` 桩缺 `onLeave`（`ui.js` 有），页面 render 第一步就抛 `TypeError`，导致这个 1788 行的页面**一直没有渲染回归**。补上空实现后 61 项断言全部通过 —— 未改动任何既有断言预期
+- **retain 明确不动的部分**：`mt5700-btn-*` / `mt5700-badge-*` / `mt5700-banner-*` 等变体是公共组件 `button(label, fn, variant)` / `badge(text, variant)` 的完整变体表（`banner` 的 `success`/`info`/`danger` 由 `bannerOf()` 的对象字面量传入，实际可达），删了会让将来传入该变体变成无样式按钮；56 组「同选择器多段定义」是基础 → 强化 → 主题兼容的分层覆盖，逐条做过遮蔽分析（含 shorthand 展开），**0 条**被后续规则完全覆盖；29 个未被 `var()` 引用的自定义属性是主题覆写入口。另记录一项**未修**的既存缺陷：`mt5700.css` 两处 `animation: mt-anim-float` 指向不存在的 `@keyframes`，动画当前静默失效 —— 补关键帧等于新增用户此前看不到的动画，超出「视觉零变化」边界
+
+### style(schedule) 定时锁频编排页重排：状态指标化、参数双列、时段分卡、输入框不再预填
+
+> 该页原先把所有内容塞进一张卡片、一行一个字段，四项运行状态挤成一条 hint 串，锁频条目只有 placeholder 没有字段标签；`Mt5700.input('number', '10', String(draft.check_interval))` 在后端未返回数值时会把字面量 `undefined` 填进输入框，「看到的值」与「已保存的配置」对不上。本次按纯表单页的既有规范重排，并把输入框的预填策略统一改为「后端没给就留空」。详见 [`docs/release-notes/v1.30.9.md`](docs/release-notes/v1.30.9.md)。
+
+- **feat(schedule) 输入框一律不预填**：`check_interval` / `timeout` / 夜间起止时间只在 `AT+SCHED?` 真返回了值时才回填，其余留空并只写 placeholder；修复 `String(undefined)` → 字面量 `"undefined"` 落进输入框的缺陷。保存时对空值给出明确校验文案（检测间隔 ≥10 秒、无服务超时 ≥30 秒、夜间时段须为 `HH:MM`）
+- **feat(schedule) 运行状态改为四格指标**：总开关 / 当前时段 / 下次切换 / 已切换次数；`current_mode` 的 `night` / `day` 归一为中英混排的「夜间」「日间」；`applied=false` 与「后端未返回 status」改为独立提示行，不再和状态值挤在同一行
+- **style(schedule) 排版重排**：调度参数走 `.mt5700-form-grid` 双列栅格（窄屏回落单列、手机端标签居左）；夜间 / 日间拆成两张并排卡片，卡内按「启用开关 → 时段 → 4G 锁频 → 5G 锁频」分段；锁频条目改为「序号 + 字段网格 + 删除」三列，每个控件带 label，删除按钮不再随行高拉伸
+- **style(schedule) 开关统一走 `Ui.switch`**：移除页内自写的裸 checkbox 副本，拨杆右侧补「已开启 / 已停用」状态文字；停用某个时段时其配置区整体压暗并给出说明，开关本身仍可点击恢复
+- **feat(schedule) 锁频字段按类型裁剪**：类型 3（锁 Band）只留频段，类型 1（锁频点）不要 PCI —— 与手册 13.12.3 / 13.13.3 的实际下发参数对齐，避免「填了频点却被忽略」；频点数与 PCI 改为 `type=number` 并带 `min` / `max`
+- **feat(schedule) 增加实时下发预览**：每个锁频块底部显示 `band=… · arfcn=… · scs=… · pci=…`，未填全时标红提示，保存前即可确认将要下发的内容
+- **fix(schedule) 去掉「展开配置 / 收起」的二级折叠**：本页存在的意义就是编排，首屏即可编辑；同时把轮询改为只刷新状态卡，不再重建表单（原实现重建会夺走正在输入的焦点）
+- **chore(css) 新增页面专用样式**：`mt5700.css` 末尾追加 `.mt5700-switch-row` / `.mt5700-sched-*` / `.mt5700-lock-row` 一组仅服务本页的类，不改动任何既有选择器；`MT5700_CSS_VERSION` 2.43.0 → 2.44.0 触发浏览器缓存刷新
+- **test** `static-check` 4/4 与 12 个单测全部通过；另用真实模块 + 假后端搭了一套浏览器内预览（桌面 / 手机 / 明暗 / 三种场景），逐项核对空输入、开关联动、类型切换与溢出
+
+### fix(schedule) 定时任务彻底脱离前端：到点唤醒 + 重连补下发
+
+> 调度本来在守护进程里，但 `run()` 只按 `check_interval` 醒，间隔设大时切换点最多晚一整轮才生效；`connected_flag` 只有真/假两态，模组重连后锁频已被清空却仍被当成「已下发」。两处都会让「关了页面就不灵」的现象成立。
+
+- **fix(schedule) 到点唤醒**：睡「检测间隔」与「距下一个切换点」的较小值，切换点后 1 秒内判定；`seconds_to_next_switch` 用秒粒度差值算边界，`22:00:30` 不再被当成「22:00 已过」
+- **fix(schedule) 重连补下发**：`AtClient` 新增 `connect_epoch`（每次成功建链 +1），代次变化即把 `applied` 置回 false 让本轮 tick 重下发；刚下发 120 秒内不重复，避免链路抖动引发 `CFUN` 反复切换
+- **feat(schedule) 状态带插件时间**：`status` 新增 `next_switch_time`（`YYYY-MM-DD HH:MM`）、`next_switch_in`（秒）、`server_time`，三个字段取同一个 `nettime::now()`；页面只回显后端时间与倒计时，不用浏览器时钟推算，并标「今天 / 明天」
+- **fix(parse) ARFCN / PCI 取 0 不再被当成空值**（Codex PR #29 P2）：`i.arfcn || ''` 会把合法的 0 判成空，导致「填了 0 保存不了」；改为只认 `null` / `undefined`，并补 3 条回归用例
+- **style(modal) 全局弹窗文字可见性**：只覆盖颜色不改版式 —— 正文 `#333c4b`（5.27:1）、说明小字 `#3b4350`（4.73:1）、取消键 `#3730a3`（4.71:1），暗色另给一组；覆盖 `.mt5700-modal` / `.at-modal` / `.cbi-modal` / `.modal` 四套结构。无头浏览器实测改动前后宽高、内边距、圆角、字号、行高、字重完全一致
+- **style(ui) 「后端未就绪」提示条改为视口悬浮**：原来插的是 LuCI 原生 `.alert-message`，在文档流里会把整页内容整体推下去（实测英雄区从 72px 被推到 150px），探活抖动一次页面就上下跳一次。改为 `position: fixed` 脱离文档流后，插入与移除时页面零位移；`top` 由 `placeNotice()` 实测主题头部是否吸顶后写入，避免被 Argon 一类固定头部盖住；补「关闭」按钮（只收起本次提示，再次降级时重新出现）
+
+### refactor(css) 弹窗与提示条抽成 global.css：一次覆盖全部 12 个页面
+
+> 上面两项都是**插件级组件**，却分别写在两个不同的样式文件里：弹窗段在 `mt5700.css`（恰好每个页面都加载，能生效），提示条段在 `at.css`（只有 `require ui.js` 的页面加载）。改动前 `service.js` 是唯一只 `require mt5700` 的视图，于是同一个提示条在它那里退回 LuCI 原生横条 —— 实测 `position: static`、宽 1244px、圆角 3px、无阴影，出现时把整页内容推下去 44px。样式散落两处也意味着以后调其中一项很容易只改到一半页面。
+
+- **refactor(css) 新增 `global.css`**：把「弹窗文字可见性」与「后端未就绪提示条」两段整体迁入，由 `mt5700.js` 注入 —— 该模块被 12 个视图**全部** require（`static-check` 的菜单路由校验同时兜底：12 条路由的视图都必须存在），因此注入一次即全站生效，页面无需各自引入
+- **refactor(css) 加载顺序即层级**：`mt5700.css` 先注入、`global.css` 后注入，后者作为「最终修订层」在同特异性规则上胜出；`at.css` 相应把提示条段移除，只留一行指路注释，避免同一选择器在两份文件里各自演化
+- **refactor(css) 变量链按页面可用性回落**：提示条底色写成 `var(--at-bg-glass, var(--mt5700-glass-bg, rgba(255,255,255,.86)))`，常规页取到 `.78` 的 at 玻璃色（视觉与此前完全一致），只加载 mt5700 的页面回落到 `.70` 的插件玻璃色，两边都不会掉成透明
+- **chore(css) 版本各自独立**：`MT5700_CSS_VERSION` 2.45.0 → 2.46.0（mt5700.css 变短）、`AT_CSS_VERSION` 1.14.0 → 1.15.0（at.css 移除提示条段）、新增 `GLOBAL_CSS_VERSION` 1.0.0（以后只调这两块不必连带刷新 5900 行的 mt5700.css）
+- **feat(ui) 服务配置页接入统一启动入口**：`service.js` 补 `require at-webserver/ui` 并在 `render` 末尾调 `Ui.startup(page, null)` —— 保存与重载都要 at-webserver 起来才有效，连不上时正是最需要提示的场景；`onReady` 传 `null`，因为本页数据全走 ubus，不依赖 AT 通道。至此 12 个页面共用同一条提示条，没有例外
+- **test** 新增 `tests/global-css-test.js`（29 项）：12 个视图的依赖可达性、注入顺序（`global.css` 必须后于 `mt5700.css`）、提示条与四套弹窗结构选择器存在性、弹窗段「只改颜色」约束、`at.css` / `mt5700.css` 不再重复定义（防止样式再散回两处）
+- **test** 无头浏览器实测三场景（service 改动前 / service 改动后 / 常规页改动后）：提示条 `static`→`fixed`、1244px→720px、圆角 3px→12px、出现阴影；弹窗正文对比度 3.95:1→11.12:1；三场景 `scrollWidth - clientWidth = 0`，无横向溢出
+
+### style(css) 空态立绘恢复漂浮：补上一直缺失的 `@keyframes mt-anim-float`
+
+> `mt5700.js` 的 `api.empty` 注释里写着「旋转加在定位壳上，不覆盖 svg 自身的漂浮动画」，但 `mt-anim-float` 这个关键帧**从未定义过**：`.mt-anime-empty-svg`（4s）和 `.mt-anime-mint-svg`（4.6s，带 `!important`）两处 `animation` 指向的都是一个不存在的名字，浏览器静默忽略，两个角色其实一直静止。上一轮前端审查时把它列为「仅记录、未修」——补上等于新增一个用户此前看不到的动画，超出那次「视觉基线 = 当前实际效果」的边界。
+
+- **style(css) 补关键帧**：`translateY` 0 → -6px → 0，**只给位移不给旋转**。外层 `.mt-anime-pos-shell` 已经用内联 `rotate()` 随机了 -10°~+10° / -16°~+16°，再叠一层旋转会让摆幅翻倍、看起来像在「晃」而不是「浮」
+- **style(css) 节奏沿用引用处声明**：4s / 4.6s + `alternate` + `ease-in-out`，实际呼吸周期分别是 8s / 9.2s——与既有 `mt-float-slow`（8s）同档但刻意不同拍，避免大小两个角色整齐划一地上下起伏
+- **style(css) 无障碍降级**：`prefers-reduced-motion: reduce` 下关闭这两个动画。选择器写成 `.mt-anime-empty-svg.mt-anime-empty-svg` 这类重复类名抬特异性，因为 `.mt-anime-mint-svg` 那条 `animation` 带 `!important` 且声明在降级块**之后**，普通同类名选择器压不住
+- **chore(css) 版本**：`MT5700_CSS_VERSION` 2.46.0 → **2.46.2**（跳过 2.46.1 —— 那个号被同批的前端审查整理占用了；uhttpd 静态资源的 `Last-Modified` 恒为 1970，版本号不涨浏览器不会重新取）
+- **test** 无头 Chromium 探针：两个元素的 `getAnimations()` 均返回 `mt-anim-float:running`；手动 seek 到 0/25/50/75/100% 读到 `0 -3 -6 -3 0`，峰值 -6.00px 且 duration 分别为 4000/4600ms；`.mt5700-empty` 高度在「有动画 / `cancel()` 后 / reduce 模式」三种状态下均为 254.25px（`transform` 不进文档流）；`--force-prefers-reduced-motion` 下 `getAnimations()` 返回空数组
+
+### docs(README) 补 OpenWrt 版本兼容性说明：下限 22.03、实测 24.10 / 25.12
+
+> 原文只在徽章上写了「24.10 | 25.x」，正文却说「OpenWrt 24.10 及更早版本（opkg）」——这句话很容易被读成「24.10 以前的都支持」。实际上 21.02 及更早既没有 ucode 解释器，rpcd 也不支持 ucode 插件，装上去的表现是页面能打开、每个操作都报 `Method not found`。
+
+- **docs** 新增「OpenWrt 版本兼容性」章节：版本矩阵（25.12 / 24.10 / 23.05 / 22.03 / ≤21.02）、下限为什么是 22.03（`rpcd-mod-ucode` 首发于 22.03.0，ucode 自该版起随系统预装）、前后端各自的版本敏感度、架构覆盖范围、装前三条自查命令
+- **docs** 记录两条实测事实：包元数据 `Depends` 只有 `libc`（`LUCI_DEPENDS` 留空、不钉 `luci-base` 版本，故不会因 LuCI 版本互斥装不上）；后端二进制 `file` 输出 `statically linked`，与目标系统 libc / ABI 无关，只与 CPU 架构有关
+- **docs** 补充「与本插件无关但同样装不上」的三项：模组驱动（本包不带内核驱动）、串口独占（QModem）、busybox 的 `nc` applet 被裁剪
+- **chore(docs)** 版本徽章 v1.29.0 → v1.30.9；安装示例的文件名改为通配（原为钉死的 `1.29.0-r8`，每发一版就得改一次）；目录表同步补上本节锚点
+
 ## v1.30.8（2026-10-30）
 
 ### refactor 冗余代码清理：死代码删除、生命周期收敛、重复逻辑合并

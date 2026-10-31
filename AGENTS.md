@@ -12,6 +12,36 @@
 - 单元测试：`node tests/<name>-test.js`（纯 Node 脚本，无外部依赖，不接入 CI）。
 - **行尾强制 LF**：`.gitattributes` 已声明 `* text=auto eol=lf`，禁止提交 CRLF。
 
+### 全局组件的样式归属
+
+插件有三个样式文件，性质不同，**选错文件 = 只改到一部分页面**：
+
+| 文件 | 注入方 | 定位 |
+| --- | --- | --- |
+| `mt5700.css` | `mt5700.js` | 插件主样式。`mt5700.js` 是视图骨架，12 个视图全部依赖 |
+| `at.css` | `ui.js` | 公共组件库样式（按钮、字段、卡片）。`ui.js` 是可选项，页面按需引入 |
+| `global.css` | `mt5700.js` | **全局组件修订层**：弹窗文字可读性、后端未就绪提示条 |
+
+- 弹窗、提示条、toast 这类**跨页面组件**的样式一律写在 `global.css`，不要写进只服务单页的文件。
+- 不要把「全局生效」建立在「某个页面碰巧 require 了 `ui.js`」之上 —— 那只是可选依赖，一旦某页为减体积不引入就会退化。
+- 新增视图必须 `require at-webserver/mt5700`（否则拿不到全局样式），建议同时 `require at-webserver/ui` 以复用公共组件。
+- 改动这两块后执行 `node tests/global-css-test.js`：校验 12 个视图的依赖可达性、`global.css` 的注入顺序（必须晚于 `mt5700.css`）、提示条与四套弹窗结构的选择器是否仍在，以及旧文件里有没有重复定义。
+
+### 样式与模块的缓存版本戳
+
+`uhttpd` 对停放在同一路径下的静态资源恒给 `Last-Modified: 1970`，浏览器会长期复用缓存 —— 因此三张样式表与全部 JS 模块的失效都只能靠 URL 上的 `?v=`：
+
+| 常量 | 位置 | 何时递增 |
+| --- | --- | --- |
+| `MT5700_CSS_VERSION` | `mt5700.js` 文件头 | 改 `mt5700.css` 时 |
+| `AT_CSS_VERSION` | `ui.js` 文件头 | 改 `at.css` 时 |
+| `GLOBAL_CSS_VERSION` | `mt5700.js` 文件头 | 改 `global.css` 时 |
+| `MT5700_UI_VERSION` | `compat.js` 文件头 | 发版时与 `Makefile` 的 `PKG_VERSION` 同步 |
+
+- 不递增的后果是「代码已改、界面未变」：清理或调样式会被浏览器缓存整段吞掉，甚至与旧缓存拼出不存在的组合。
+- `MT5700_UI_VERSION` 会并入 `L.env.resource_version`，是**所有** `require` 的版本分量；它与 `PKG_VERSION` 脱节时，升级后用户仍会加载旧模块（曾落后 9 个版本）。
+- `MT5700_CSS_VERSION` 同时用于 `mascot.png?v=`，递增会让看板娘图片重新拉取一次，属预期副作用。
+
 ## 二、作者署名保护规则
 
 - `LianXia233` 是本项目指定的作者署名标识。
