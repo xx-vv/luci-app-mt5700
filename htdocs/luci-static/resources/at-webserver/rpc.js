@@ -86,7 +86,8 @@ var rpcUsageCtl = L.rpc.declare({
 	 * 曾写成 `days`：LuCI 按名字组装请求，字面量 `days` 不会出现在
 	 * args 里，ucode 那边 `int(getStr(a,'day'))` 恒为 0，
 	 * 「每月几号自动清零」永远是默认 1 号 —— 而界面上改完没有任何报错。 */
-	params: ['action', 'day'],
+	/* source 只在 set_source 时有效；LuCI 按名字组装请求，undefined 项会被省略 */
+	params: ['action', 'day', 'source'],
 	expect: {}
 });
 
@@ -1222,17 +1223,33 @@ function parseMONSC(data) {
 /* ---- HFREQINFO 载波 ---- */
 
 /*
- * ^HFREQINFO:<n>,<sysmode>,<band_classN>,<dl_fcnN>,<dl_freqN>,<dl_bwN>,
- *            <ul_fcnN>,<ul_freqN>,<ul_bwN>   （N 为载波号，NR 最多 4 个）
+ * ^HFREQINFO:<n>,<sysmode>,<band>,<dl_fcn>,<dl_freq>,<dl_bw>,
+ *            <ul_fcn>,<ul_freq>,<ul_bw>,   （每组 7 字段）
+ *            <band>,<dl_fcn>,<dl_freq>,<dl_bw>,
+ *            <ul_fcn>,<ul_freq>,<ul_bw>    （可有多组）
  *
- * 手册 13.16.3 权威字段顺序（实测 NR n41）：
+ * 布局：共享头 2 字段（n, sysmode）+ N × 7 字段载波组。
+ * NR 最多 4 组。同一行可上报多组载波（如 SA n78+n78 CA 场景），
+ * 旧版每行只解析第一组（p[2..8]），第二组及之后被丢弃，页面误显示单载波。
+ *
+ * 手册 13.16.3 权威字段顺序（实测 NR n41 单组）：
  *   0,7,41,513000,2565000,100000,513000,2565000,100000
  *   -> n=0  sysmode=7(NR)  band=41  dl_fcn=513000
  *      dl_freq=2565000kHz(2565MHz)  dl_bw=100000kHz(100MHz)
  *      ul_fcn=513000  ul_freq=2565000kHz  ul_bw=100000kHz
  *
+ * 实测 SA 同行多组（n78+n78，2+7×2=16 字段）：
+ *   0,7,78,636664,3549960,100000,636664,3549960,100000,
+ *    78,630000,3450000,100000,0,0,1400
+ *   -> 第一组 n78 dl=636664/3549.96MHz/100MHz ul=636664/3549.96MHz/100MHz
+ *   -> 第二组 n78 dl=630000/3450MHz/100MHz ul=0/0/1400kHz（上行占位，非有效双上行）
+ *
  * 注意：本命令只上报频率/带宽，不返回 RSRP/RSRQ/SINR。信号质量一律取自
- * ^MONSC（13.9.3），不要在此处解析信号字段。
+ * ^MONSC / ^MONSSC（13.9.3 / 13.27），不要在此处解析信号字段。
+ *
+ * 兼容性：行长度必须满足 (len-2) % 7 === 0（单组 len=9、两组 len=16…）；
+ * 不完整行跳过，避免 parseInt 截断非法字段产生残缺载波。
+ * 保留原始共享 n，不人为改为载波索引。
  */
 function parseHFREQINFO(data) {
 	var out = [];
@@ -1241,18 +1258,25 @@ function parseHFREQINFO(data) {
 		var p = lines[i].split(',').map(function (s) { return s.trim(); });
 		if (!p.length) continue;
 		var syscode = p[1] ? p[1].replace(/"/g, '').trim() : '';
-		out.push({
-			n: p[0] !== undefined ? parseInt(p[0], 10) : 0,
-			sysModeCode: syscode,
-			sysMode: sysModeName(syscode),
-			band: p[2] ? p[2].trim() : '',
-			dlFcn: p[3] ? p[3].trim() : '',
-			dlFreqKHz: p[4] ? parseInt(p[4], 10) : 0,
-			dlBwKHz: p[5] ? parseInt(p[5], 10) : 0,
-			ulFcn: p[6] ? p[6].trim() : '',
-			ulFreqKHz: p[7] ? parseInt(p[7], 10) : 0,
-			ulBwKHz: p[8] ? parseInt(p[8], 10) : 0
-		});
+		var sysMode = sysModeName(syscode);
+		var sharedN = p[0] !== undefined ? parseInt(p[0], 10) : 0;
+		/* 共享头 2 字段后，每 7 字段一组；行长度不完整则跳过 */
+		if (p.length < 9 || (p.length - 2) % 7 !== 0) continue;
+		for (var off = 2; off < p.length; off += 7) {
+			var g = p.slice(off, off + 7);
+			out.push({
+				n: sharedN,
+				sysModeCode: syscode,
+				sysMode: sysMode,
+				band: g[0] ? g[0].trim() : '',
+				dlFcn: g[1] ? g[1].trim() : '',
+				dlFreqKHz: g[2] ? parseInt(g[2], 10) : 0,
+				dlBwKHz: g[3] ? parseInt(g[3], 10) : 0,
+				ulFcn: g[4] ? g[4].trim() : '',
+				ulFreqKHz: g[5] ? parseInt(g[5], 10) : 0,
+				ulBwKHz: g[6] ? parseInt(g[6], 10) : 0
+			});
+		}
 	}
 	return out;
 }
@@ -1413,7 +1437,9 @@ function normalizeUsage(u) {
 		reset_day: Number(u.reset_day) || 0,
 		/* 时刻来源（NTP / 设备时钟）：回退设备时钟时按日历清零可能不准，前端据此提示 */
 		time_source: u.time_source || '',
-		device: u.device || ''
+		device: u.device || '',
+		/* 统计来源：netdev=WAN 物理网卡 sysfs / modem=模组 AT^DSFLOWQRY */
+		source: u.source === 'modem' ? 'modem' : 'netdev'
 	};
 }
 
@@ -1456,10 +1482,12 @@ function fetchUsage() {
  * 使用量控制（清零 / 开关持久化 / 改自动清零日）。
  * day 仅在 set_reset_day 时使用（每月几号，1~31）。
  */
-function fetchUsageCtl(action, day) {
-	/* day 只在 set_reset_day 时有效；其余动作传 undefined，LuCI 会省略该参数 */
+function fetchUsageCtl(action, day, source) {
+	/* day 只在 set_reset_day、source 只在 set_source 时有效；
+	 * 其余动作传 undefined，LuCI 会省略该参数 */
 	var d = (day == null) ? undefined : (Number(day) || 0);
-	return withTimeout(rpcUsageCtl(action, d), 5000, '使用量操作超时')
+	var s = (source == null) ? undefined : (source === 'modem' ? 'modem' : 'netdev');
+	return withTimeout(rpcUsageCtl(action, d, s), 5000, '使用量操作超时')
 		.then(function (resp) {
 			resp = resp || {};
 			if (resp.success === false) {

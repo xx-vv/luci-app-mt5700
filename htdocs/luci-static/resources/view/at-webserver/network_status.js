@@ -8,6 +8,8 @@
 'require at-webserver/parse';
 'require at-webserver/ui';
 'require at-webserver/mt5700';
+'require at-webserver/icons';
+'require at-webserver/uimode';
 /* global L, AtWs, Parse, Mt5700 */
 
 	/*
@@ -55,6 +57,8 @@ return L.view.extend({
 			rawHfreq: [],
 			hfreqSuccess: null,
 			secondarySuccess: null,
+			/* 辅站查询的 AT 终止状态（区分传输成功与 AT 命令实际结果，issue #39） */
+			secondaryATStatus: { monssc: null, cascell: null },
 			caStatus: {
 				state: 'pending', // 'pending' | 'single' | 'ca' | 'none' | 'error' | 'expired'
 				lastSuccessTime: 0
@@ -115,8 +119,17 @@ return L.view.extend({
 		}
 
 		// 流量趋势微型火花线数据（初始为真实空/0采样点，绝不伪造随机数）
-		var sparkDown = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-		var sparkUp = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+		var SPARK_POINTS = 12;
+		function zeroSparkSeries() {
+			var a = [];
+			for (var i = 0; i < SPARK_POINTS; i++) a.push(0);
+			return a;
+		}
+		var sparkDown = zeroSparkSeries();
+		var sparkUp = zeroSparkSeries();
+		/* 火花线数据当前所属的统计来源：切源时必须整体换源，
+		 * 不能把两套计数器的历史采样点混在一张图里。 */
+		var sparkSource = null;
 
 		// DOM 根容器
 		var layout = E('div', { 'class': 'mt-anime-container' });
@@ -224,7 +237,7 @@ return L.view.extend({
 				]),
 				E('span', { 'class': 'mt-pill-tag' }, [
 					E('span', { 'class': 'mt-beacon-dot' }),
-					E('span', {}, '实时')
+					E('span', { 'id': 'traffic-source-tag' }, '实时 · 物理网卡')
 				])
 			]),
 			E('div', { 'class': 'mt-traffic-rows' }, [
@@ -237,7 +250,8 @@ return L.view.extend({
 							E('span', { 'class': 'mt-traffic-val', 'id': 'traffic-dl-val' }, '0 B/s')
 						])
 					]),
-					E('div', { 'class': 'mt-traffic-chart-mini', 'id': 'spark-dl-box' })
+					E('div', { 'class': 'mt-traffic-chart-mini', 'id': 'spark-dl-box',
+						'title': '下行速率趋势 · 来源：物理网卡' })
 				]),
 				// 上行
 				E('div', { 'class': 'mt-traffic-item' }, [
@@ -248,7 +262,8 @@ return L.view.extend({
 							E('span', { 'class': 'mt-traffic-val', 'id': 'traffic-ul-val' }, '0 B/s')
 						])
 					]),
-					E('div', { 'class': 'mt-traffic-chart-mini', 'id': 'spark-ul-box' })
+					E('div', { 'class': 'mt-traffic-chart-mini', 'id': 'spark-ul-box',
+						'title': '上行速率趋势 · 来源：物理网卡' })
 				])
 			]),
 			// 本次使用量（后端常驻统计：页面关闭/刷新都不影响；可选持久化、可自动清零）
@@ -290,6 +305,20 @@ return L.view.extend({
 						E('span', { 'class': 'mt-usage-lbl' }, '峰值速率'),
 						E('span', { 'class': 'mt-usage-val', 'id': 'usage-peak' }, '↓0 B/s · ↑0 B/s')
 					]),
+				E('div', { 'class': 'mt-usage-cell wide auto source' }, [
+					E('span', { 'class': 'mt-usage-lbl' }, '统计来源'),
+					E('span', { 'class': 'mt-usage-auto' }, [
+						E('select', {
+							'class': 'mt-usage-source', 'id': 'usage-source',
+							'title': '物理网卡：自动识别 WAN 区域模组网口，直读 sysfs 计数器，零 AT 负担；模组 AT：AT^DSFLOWQRY 上报的 DS 累计流量（2 秒粒度）',
+							'change': setUsageSource
+						}, [
+							E('option', { 'value': 'netdev' }, '物理网卡'),
+							E('option', { 'value': 'modem' }, '模组 AT')
+						]),
+						E('span', { 'class': 'mt-usage-unit mt-usage-source-hint', 'id': 'usage-source-hint' }, '')
+					])
+				]),
 					E('div', { 'class': 'mt-usage-cell wide auto' }, [
 						E('span', { 'class': 'mt-usage-lbl' }, '每月清零'),
 						E('span', { 'class': 'mt-usage-auto' }, [
@@ -492,6 +521,15 @@ return L.view.extend({
 		   ========================================================================== */
 
 		function svgIcon(name) {
+			/* 图标改由全局 Icon Manager 提供：普通模式返回逐字保留的原 12 个
+			 * 内联图元（st-* 表，stroke 2、24×24，视觉零变化），极简模式返回
+			 * 重新绘制的 MD3 图元。data-mt-icon 让模式切换时只重绘内部图元。 */
+			if (window.AtIcons && typeof window.AtIcons.build === 'function') {
+				var icon = window.AtIcons.build('st-' + name, { className: 'mt-card-title-icon' });
+				if (icon) return icon;
+			}
+
+			/* 兜底：Icon Manager 未就绪时沿用原有内联生成，图标绝不缺失 */
 			var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 			svg.setAttribute('class', 'mt-card-title-icon');
 			svg.setAttribute('viewBox', '0 0 24 24');
@@ -533,6 +571,14 @@ return L.view.extend({
 		function createCellularTowerSvg(size) {
 			var px = size || 72;
 			var wrap = E('div', { 'class': 'mt-tower-svg-box' });
+			/* 极简模式：不再注入 1024×1024 的广播塔复杂路径（数十个 path + 装饰
+			 * 填充），改用重绘的 MD3 小区图标。DOM 节点与渲染开销真正下降。 */
+			if (window.AtUimode && typeof window.AtUimode.current === 'function'
+				&& window.AtUimode.current() === 'minimal'
+				&& window.AtIcons && typeof window.AtIcons.build === 'function') {
+				var icon = window.AtIcons.build('op-cell', { w: px, h: px });
+				if (icon) { wrap.appendChild(icon); return wrap; }
+			}
 			var svg = '<svg viewBox="0 0 1024 1024" width="' + px + '" height="' + px + '" fill="currentColor" aria-hidden="true">';
 			for (var i = 0; i < BROADCAST_TOWER_PATHS.length; i++) {
 				svg += '<path d="' + BROADCAST_TOWER_PATHS[i] + '"></path>';
@@ -692,6 +738,17 @@ return L.view.extend({
 			var pathD = 'M ' + pts.join(' L ');
 			var lastPt = pts[pts.length - 1].split(' ');
 			var gradId = 'spark-grad-' + targetId;
+
+			/* 极简模式：不创建渐变 defs / 面积填充 / 脉冲圆点，只保留折线与端点 */
+			if (window.AtUimode && typeof window.AtUimode.current === 'function'
+				&& window.AtUimode.current() === 'minimal') {
+				box.innerHTML =
+					'<svg viewBox="0 0 100 36" width="90" height="32">' +
+					'  <path d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linecap="round"/>' +
+					'  <circle cx="' + lastPt[0] + '" cy="' + lastPt[1] + '" r="2.5" fill="' + color + '"/>' +
+					'</svg>';
+				return;
+			}
 
 			box.innerHTML =
 				'<svg viewBox="0 0 100 36" width="90" height="32">' +
@@ -1146,6 +1203,11 @@ return L.view.extend({
 				return null;
 			}
 
+			/* 极简模式：数据/曲线计算完全共用，只跳过纯视觉装饰层
+			 * （渐变面积、质量分区背景带、末端脉冲点与 defs），减少 DOM 与持续动画。 */
+			var minimalChart = !!(window.AtUimode && typeof window.AtUimode.current === 'function'
+				&& window.AtUimode.current() === 'minimal');
+
 			/* ---- 背景质量分区带（窄屏不标注档位文字，避免拥挤） ---- */
 			var bands = '';
 			for (var b = 0; b < SIGNAL_TIERS.length; b++) {
@@ -1207,7 +1269,7 @@ return L.view.extend({
 			/* ---- 主曲线层（按图例可见性渲染） ---- */
 			var seriesLayer = '';
 			if (chartSeries.rsrp) {
-				seriesLayer += '<path d="' + areaPathFor('rsrp') + '" fill="url(#rsrp-area)"/>' +
+				seriesLayer += (minimalChart ? '' : '<path d="' + areaPathFor('rsrp') + '" fill="url(#rsrp-area)"/>') +
 					'<path d="' + strokePathFor('rsrp') + '" fill="none" stroke="' + CHART_COLORS.rsrp + '" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>' +
 					isolatedDotsFor(seriesMeta[0]);
 			}
@@ -1250,14 +1312,18 @@ return L.view.extend({
 			}
 			var tierY = 44 + activeMeta.length * rowH - 4;
 
-			box.innerHTML =
-				'<svg id="mt-trend-svg" viewBox="0 0 ' + w + ' ' + h + '" width="100%" style="overflow:visible; display:block;">' +
+			if (minimalChart) { bands = ''; endDots = ''; }
+			var defsLayer = minimalChart ? '' :
 				'  <defs>' +
 				'    <linearGradient id="rsrp-area" x1="0" y1="0" x2="0" y2="1">' +
 				'      <stop offset="0%" stop-color="' + CHART_COLORS.rsrp + '" stop-opacity="0.35"/>' +
 				'      <stop offset="100%" stop-color="' + CHART_COLORS.rsrp + '" stop-opacity="0.02"/>' +
 				'    </linearGradient>' +
-				'  </defs>' +
+				'  </defs>';
+
+			box.innerHTML =
+				'<svg id="mt-trend-svg" viewBox="0 0 ' + w + ' ' + h + '" width="100%" style="overflow:visible; display:block;">' +
+				defsLayer +
 				/* 质量分区背景 */
 				bands +
 				/* 网格与双轴刻度 */
@@ -1455,6 +1521,28 @@ return L.view.extend({
 			});
 		}
 
+		/* 切换统计来源：物理网卡 sysfs / 模组 AT^DSFLOWQRY。
+		 * 后端写 UCI 并热更新；切换后 device 标签改变，累计值保留、自动重新基线。
+		 * 失败时把控件回滚到当前实际来源，避免界面显示与后端不一致。 */
+		function setUsageSource() {
+			var el = document.getElementById('usage-source');
+			if (!el) return;
+			var source = (el.value === 'modem') ? 'modem' : 'netdev';
+			AtWs.usageCtl('set_source', undefined, source).then(function (r) {
+				if (r && r.success && r.usage) {
+					state.usage = r.usage;
+					/* 图表与速率立即换源：清空旧来源历史点、重置采样基线，
+					 * 并马上按新来源采一次，避免旧来源的点继续画在图上。 */
+					resetTrafficSeries(r.usage.source);
+					sampleRate();
+				} else {
+					el.value = (state.usage && state.usage.source === 'modem') ? 'modem' : 'netdev';
+				}
+			}).catch(function () {
+				el.value = (state.usage && state.usage.source === 'modem') ? 'modem' : 'netdev';
+			});
+		}
+
 		function formatSpeedNumber(bytesPerSec) {
 			var bits = bytesPerSec * 8;
 			if (bits >= 1e9) return (bits / 1e9).toFixed(2) + ' Gbps';
@@ -1465,7 +1553,37 @@ return L.view.extend({
 			return Math.round(bits / 8) + ' B/s';
 		}
 
+		/* 火花线推进：只在速率采样产生新点时调用，与当前来源绑定。 */
+		function pushTrafficSample(down, up) {
+			sparkDown.push(down > 0 ? down : 0);
+			if (sparkDown.length > SPARK_POINTS) sparkDown.shift();
+			sparkUp.push(up > 0 ? up : 0);
+			if (sparkUp.length > SPARK_POINTS) sparkUp.shift();
+		}
+
+		/* 统计来源切换：速率数值、火花线历史、采样基线整体换源。
+		 * netdev 是 sysfs 接口累计、modem 是 DS 累计，绝对值与刷新粒度
+		 * 都不同，混在一张图里会画出虚假尖峰。 */
+		function resetTrafficSeries(source) {
+			sparkSource = source === 'modem' ? 'modem' : 'netdev';
+			sparkDown = zeroSparkSeries();
+			sparkUp = zeroSparkSeries();
+			state.rtDown = 0;
+			state.rtUp = 0;
+			rateSample = null;
+			renderSpeedUI();
+		}
+
 		function renderSpeedUI() {
+			var src = (state.usage && state.usage.source === 'modem') ? 'modem' : 'netdev';
+			var srcLabel = src === 'modem' ? '模组 AT' : '物理网卡';
+			var srcTag = document.getElementById('traffic-source-tag');
+			if (srcTag) srcTag.textContent = '实时 · ' + srcLabel;
+			var dlBox = document.getElementById('spark-dl-box');
+			var ulBox = document.getElementById('spark-ul-box');
+			if (dlBox) dlBox.title = '下行速率趋势 · 来源：' + srcLabel;
+			if (ulBox) ulBox.title = '上行速率趋势 · 来源：' + srcLabel;
+
 			var dlStr = formatSpeedNumber(state.rtDown);
 			var ulStr = formatSpeedNumber(state.rtUp);
 
@@ -1475,14 +1593,9 @@ return L.view.extend({
 			var elUl = document.getElementById('traffic-ul-val');
 			if (elUl) elUl.textContent = ulStr;
 
-			// 更新迷你火花线：纯设备真实采样数据，为 0 则为 0，严禁使用 Math.random 伪造
-			/* 空闲（或计数器采样被重置）时老实现会塞随机数，图上在跑流量而数字是 0 B/s，
-			 * 自相矛盾。没有流量就如实画 0。 */
-			sparkDown.push(state.rtDown > 0 ? state.rtDown : 0);
-			if (sparkDown.length > 12) sparkDown.shift();
-			sparkUp.push(state.rtUp > 0 ? state.rtUp : 0);
-			if (sparkUp.length > 12) sparkUp.shift();
-
+			// 火花线只渲染 pushTrafficSample() 采到的真实点（按当前来源），
+			// 为 0 则如实画 0，严禁 Math.random 伪造；本函数被使用量轮询、
+			// 清零 / 持久化按钮等多处复用，绝不能在这里重复推点。
 			renderMiniSparkline('spark-dl-box', sparkDown, '#38bdf8');
 			renderMiniSparkline('spark-ul-box', sparkUp, '#ec4899');
 
@@ -1528,6 +1641,20 @@ return L.view.extend({
 			if (uPersist) {
 				if (u && u.persist) uPersist.classList.add('on');
 				else uPersist.classList.remove('on');
+			}
+			/* 来源控件由每秒轮询同步；用户正在操作时别抢焦点 */
+			var elSource = document.getElementById('usage-source');
+			if (elSource && u && u.source && document.activeElement !== elSource) {
+				elSource.value = (u.source === 'modem') ? 'modem' : 'netdev';
+			}
+			var elSourceHint = document.getElementById('usage-source-hint');
+			if (elSourceHint) {
+				elSourceHint.textContent = (u && u.source === 'modem')
+					? (u.device ? '模组累计' : '缓存未就绪')
+					: (u && u.device ? u.device : 'WAN 未就绪');
+				elSourceHint.title = (u && u.source === 'modem')
+					? '数据源：AT^DSFLOWQRY（经状态缓存，2 秒刷新）'
+					: '数据源：WAN 区域模组物理网口的 sysfs 计数器';
 			}
 		}
 
@@ -1628,7 +1755,18 @@ return L.view.extend({
 			if (state.temps && state.temps.modem1) {
 				avgT = state.temps.modem1 + ' ℃' + (state.temps.sub6GPA ? ' (基带 ' + state.temps.modem1 + '℃, PA ' + state.temps.sub6GPA + '℃)' : '');
 			}
-			var devIface = state.deviceInterface || (rateSample && rateSample.device) || '—';
+			/* 数据通信接口优先显示后端识别的物理网卡：state.usage.device 是后端按
+			 * 「WAN 区域 ∩ USB 模组网口」识别、无模组口时回落到默认 WAN 口物理网卡
+			 * 的结果（netdev 来源），每秒刷新且不依赖 netrate 是否成功；modem 来源
+			 * 时该字段是 DS 来源标签，不能当网卡名用。之后才回落到速率采样值。 */
+			var usageNetdev = (state.usage && state.usage.source !== 'modem'
+				&& state.usage.device) ? state.usage.device : '';
+			var sampledNetdev = (rateSample && rateSample.device) ? rateSample.device : '';
+			var devIface = usageNetdev || state.deviceInterface || sampledNetdev || '—';
+			var devIfaceTitle = usageNetdev
+				? 'WAN 区域物理网卡：优先模组 USB 网口，未识别到时回落默认 WAN 口物理网卡，不绑定接口名'
+				: ((state.deviceInterface || sampledNetdev)
+					? '实时速率采样到的 WAN 网卡' : '暂未识别到 WAN 区域物理网卡');
 			tabPanes['tab-dev'].innerHTML =
 				'<table class="mt-info-table">' +
 				'  <tr><td>模组型号</td><td>' + (state.modemInfo.model || '读取中...') + '</td></tr>' +
@@ -1636,7 +1774,7 @@ return L.view.extend({
 				'  <tr><td>固件版本</td><td>' + (state.modemInfo.fw || '—') + '</td></tr>' +
 				'  <tr><td>模组 IMEI</td><td>' + (state.modemInfo.imei || '—') + '</td></tr>' +
 				'  <tr><td>芯片温度概览</td><td>' + avgT + '</td></tr>' +
-				'  <tr><td>数据通信接口</td><td>' + devIface + '</td></tr>' +
+				'  <tr><td>数据通信接口</td><td title="' + devIfaceTitle + '">' + devIface + '</td></tr>' +
 				'</table>';
 
 			// Tab 3: SIM 卡信息 (完整真实显示 IMSI 与 ICCID，真实读取 AT+CPIN?)
@@ -1686,6 +1824,17 @@ return L.view.extend({
 			carrierBox.innerHTML = '';
 			var list = state.carriers || [];
 			var caSt = state.caStatus || { state: 'pending' };
+
+			/* SCC 信号缺失原因文案（issue #39）：保持真实空值，补充可解释状态 */
+			function getSignalReasonText(reason) {
+				switch (reason) {
+					case 'at-error': return '辅站查询返回 ERROR，模组未返回有效测量';
+					case 'no-measurement': return '已取得载波频点/带宽，未取得独立信号测量';
+					case 'timeout': return '辅站查询超时';
+					case 'not-applicable': return '当前制式不适用该辅站查询';
+					default: return '';
+				}
+			}
 
 			// 1. 查询待刷新状态 (避免直接当作单载波)
 			if (caSt.state === 'pending') {
@@ -1752,6 +1901,10 @@ return L.view.extend({
 				var sinrStr = (c.sinr != null && !isNaN(c.sinr)) ? (c.sinr + ' dB') : (c.rssi != null ? ('RSSI ' + c.rssi + ' dBm') : '—');
 				var measExtra = c.measType && c.measType !== '—' && c.measType !== 'Serving' ? (' · ' + c.measType) : '';
 
+				/* SCC 信号缺失原因说明（issue #39）：仅在 SCC 且全部信号为空时显示 */
+				var sigReasonText = (!isPcc && c.signalReason && c.rsrp == null && c.rsrq == null && c.sinr == null)
+					? getSignalReasonText(c.signalReason) : '';
+
 				caHtml +=
 					'<div class="mt-carrier-card-item" style="padding:12px 16px; background:var(--mt5700-subtle-bg); border-radius:10px; border:1px solid var(--mt5700-border-subtle); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">' +
 					'  <div style="display:flex; align-items:center; gap:10px; min-width:240px;">' +
@@ -1781,6 +1934,7 @@ return L.view.extend({
 					'      <div style="font-size:11px; color:var(--mt5700-text-muted);">SINR</div>' +
 					'      <div style="font-family:monospace; font-size:13px; font-weight:700; color:' + (c.sinr != null ? 'var(--mt5700-green)' : 'var(--mt5700-text-muted)') + ';">' + sinrStr + '</div>' +
 					'    </div>' +
+					(sigReasonText ? ('    <div style="font-size:10.5px; color:var(--mt5700-text-muted); text-align:right; min-width:180px; padding-top:3px; margin-top:2px; border-top:1px dashed rgba(128,128,128,0.15);">' + sigReasonText + '</div>') : '') +
 					'  </div>' +
 					'</div>';
 			});
@@ -2058,6 +2212,32 @@ return L.view.extend({
 			return Parse.bandFromArfcn('LTE', arfcn);
 		}
 
+		/*
+		 * 计算 SCC 信号缺失的原因（issue #39）。
+		 *
+		 * 区分三个层次：
+		 *   - 传输层是否成功（由 atStatus 记录）
+		 *   - AT 最终响应是 OK、ERROR 还是超时
+		 *   - 是否解析出有效、可关联到目标载波的独立测量
+		 *
+		 * 返回：
+		 *   'at-error'       —— AT 命令返回 ERROR（模组拒绝或参数不支持）
+		 *   'no-measurement' —— AT 命令成功（OK/NONE），但未返回可关联的独立测量
+		 *   'timeout'        —— 传输层失败或超时
+		 *   null             —— 有信号读数（不该走到这里）
+		 *
+		 * 绝不复制 PCC 读数或填 0；缺测就如实说明缺测原因。
+		 */
+		function computeSccSignalReason(atStatus, carrier) {
+			var st = atStatus || {};
+			var isLte = carrier && carrier.sysMode === 'LTE';
+			var status = isLte ? st.cascell : st.monssc;
+			if (status === 'error') return 'at-error';
+			if (status === 'ok' || status === 'none' || status === 'empty' || status === 'other') return 'no-measurement';
+			if (status === 'timeout') return 'timeout';
+			return 'no-measurement';
+		}
+
 		function syncCarriers() {
 			var now = Date.now();
 			var rawHfreq = state.rawHfreq || [];
@@ -2109,6 +2289,8 @@ return L.view.extend({
 				var h = rawHfreq[hi];
 				var sig = Parse.carrierSignalFor(h, secNR, secLTE);
 				var hBand = h.band || (h.sysMode === 'NR' ? getBandFromNrArfcn(h.dlFcn) : getBandFromLteArfcn(h.dlFcn));
+				var sigReason = null;
+				if (!sig) sigReason = computeSccSignalReason(state.secondaryATStatus, h);
 				merged.push({
 					isPcc: false,
 					carrierRole: 'SCC',
@@ -2122,7 +2304,8 @@ return L.view.extend({
 					rsrp: sig ? sig.rsrp : null,
 					rsrq: sig ? sig.rsrq : null,
 					sinr: sig ? sig.sinr : null,
-					measType: sig ? sig.measType : null
+					measType: sig ? sig.measType : null,
+					signalReason: sigReason
 				});
 			}
 
@@ -2256,10 +2439,13 @@ return L.view.extend({
 			return AtWs.client.sendCommand('AT^MONSSC').then(function (monssc) {
 				state.secondaryNR = (monssc.success && monssc.data) ? Parse.parseMonsscAll(String(monssc.data)) : [];
 				state.secondarySuccess = monssc.success;
+				/* 记录 AT 终止状态：传输成功不等于 AT 命令成功（如 ERROR / NONE） */
+				state.secondaryATStatus.monssc = monssc.success ? Parse.atStatusFromText(monssc.data) : 'timeout';
 				return AtWs.client.sendCommand('AT^CASCELLINFO?');
 			}).then(function (cascell) {
 				state.secondaryLTE = (cascell.success && cascell.data) ? Parse.parseCascellAll(String(cascell.data)) : [];
 				if (cascell.success) state.secondarySuccess = true;
+				state.secondaryATStatus.cascell = cascell.success ? Parse.atStatusFromText(cascell.data) : 'timeout';
 				syncCarriers();
 				renderCarriersAdv();
 				renderTabsUI();
@@ -2617,7 +2803,14 @@ return L.view.extend({
 		function sampleUsage() {
 			return AtWs.usage().then(function (r) {
 				if (r && r.success && r.usage) {
+					var prevSource = state.usage && state.usage.source;
 					state.usage = r.usage;
+					/* 来源也可能由页面之外（UCI / 其它会话）切换，发现变化同样换源 */
+					if (prevSource && prevSource !== r.usage.source) {
+						resetTrafficSeries(r.usage.source);
+						sampleRate();
+						return;
+					}
 					renderSpeedUI();
 				}
 			});
@@ -2625,16 +2818,23 @@ return L.view.extend({
 
 		function sampleRate() {
 			return AtWs.netRate('').then(function (r) {
+				/* 速率与火花线始终跟着当前统计来源走：netdev 直读 sysfs，
+				 * modem 由 ucode 转发后端取 DS 累计值。来源一变就整体换源。 */
+				var src = (state.usage && state.usage.source === 'modem') ? 'modem' : 'netdev';
+				if (sparkSource !== src) resetTrafficSeries(src);
 				if (!r.success) {
 					rateSample = null;
 					state.rtDown = 0;
 					state.rtUp = 0;
+					pushTrafficSample(0, 0);
 					renderSpeedUI();
 					return;
 				}
 				var now = Date.now();
-				if (r.device) state.deviceInterface = r.device;
-				if (rateSample && rateSample.device === r.device) {
+				/* modem 来源的 device 是 DS 来源标签而非物理网卡，
+				 * 不能写进「数据通信接口」用的 deviceInterface。 */
+				if (r.device && src !== 'modem') state.deviceInterface = r.device;
+				if (rateSample && rateSample.device === r.device && rateSample.source === src) {
 					var dt = (now - rateSample.t) / 1000;
 					if (dt >= 0.2) {
 						var drx = r.rx_bytes - rateSample.rx;
@@ -2642,13 +2842,19 @@ return L.view.extend({
 						state.rtDown = drx >= 0 ? drx / dt : 0;
 						state.rtUp = dtx >= 0 ? dtx / dt : 0;
 
-						rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes, device: r.device };
+						rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes,
+							device: r.device, source: src };
+						pushTrafficSample(state.rtDown, state.rtUp);
 						renderSpeedUI();
 						return;
 					}
 					return;
 				}
-				rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes, device: r.device };
+				rateSample = { t: now, rx: r.rx_bytes, tx: r.tx_bytes,
+					device: r.device, source: src };
+				state.rtDown = 0;
+				state.rtUp = 0;
+				pushTrafficSample(0, 0);
 				renderSpeedUI();
 			}).catch(function () {});
 		}
