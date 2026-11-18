@@ -61,6 +61,10 @@ option dns_exclusive '1'
 	option wechat_enabled '0'          # 企业微信推送开关（0=关，1=开）
 	option qq_enabled '0'              # QQ 机器人推送开关（0=关，1=开）
 	option wechat_webhook ''
+	# 企业微信消息格式（v1.34.0）：text（默认，保持兼容）/ markdown / markdown_v2。
+	# markdown 支持标题/加粗/链接/引用/3色字体，兼容旧客户端；markdown_v2 支持
+	# 表格/列表/图片但不支持颜色，且旧客户端显示纯文本。通道节流与 QQ 共享下方 qq_max_per_minute。
+	option wechat_msg_format 'text'
 	# QQ 机器人推送（官方 API v2）。AppID + AppSecret + 目标 ID 全部填写后启用；
 	# AppSecret 建议留空并改用环境变量 QQ_BOT_APP_SECRET（AppID 可用 QQ_BOT_APP_ID）注入，
 	# 避免凭据落盘 UCI。推送为「主动消息」：群 30~60 条/分钟、单关系 20 条/分钟、1000 条/群/天。
@@ -77,6 +81,7 @@ option dns_exclusive '1'
 	# QQ 主动消息节流（条/分钟）。官方频控是群 30~60 条/分钟、单聊 20 条/分钟，
 	# 超限后会被平台丢弃并可能触发封禁，因此这里默认压到 10 条/分钟：
 	# 每条消息按间隔排队发送（延后，不丢弃），实时通知仍会送达，只是不再挤成一坨。
+	# 同一设置也约束企业微信通道；短信/来电为实时事件，豁免节流立即直发。
 	# 0=不节流（交给平台频控，不建议）。范围 0-60。
 	option qq_max_per_minute '10'
 	option log_file '/tmp/at-notifications.log'
@@ -153,6 +158,47 @@ option dns_exclusive '1'
 	# 0=不限频（恢复旧行为）。范围 0-10080（最长 7 天）。
 	option notify_signal_min_interval '60'
 
+	# --- 每种推送类型独立的频率限制 + 推送时段（四套互不干扰）---
+	# 在**推送执行层**生效：区别于此前的 notify_signal_min_interval（只在信号生产者处生效），
+	# 这六项按类型前缀区分，对短信/来电/存储满/信号四类分别裁决，互不影响。
+	#   *_rate_enabled    1=启用该类频率限制，0=不限制（默认 0，保持既有时序）
+	#   *_min_interval    该类两条推送之间的最小间隔（分钟），0=不限频；上限 10080（7 天）
+	#   *_window_enabled  1=启用该类推送时段，0=全天可推（默认 0）
+	#   *_window_start    允许时段起点 HH:MM（含）
+	#   *_window_end      允许时段终点 HH:MM（含）；起点>终点=跨零点（如 22:00→06:00），相等=全天
+	#   *_window_action   窗外策略：defer=延迟到窗口开启后补发（同类只留最新一条）/ drop=直接丢弃。
+	#                     默认按类型区分：短信/来电 defer（实时事件不受影响）；
+	#                     信号/存储满 drop——开启时段后只推送当前时段内产生的消息，不补发陈旧事件
+	# 四类前缀（统一 notify_limit_*，与既有键完全隔离）：
+	#   notify_limit_sms / notify_limit_call / notify_limit_memory / notify_limit_signal。
+	# 时区：一律用本机系统时区（见上方「时间口径」），时刻取自 NTP 同步后的系统时钟。
+	# 注意：信号类原有的 notify_signal_min_interval 仍在生产者侧独立生效；这里的
+	# notify_limit_signal_rate_enabled 默认关，避免两层重复限频，需要时由用户自行开启。
+	option notify_limit_sms_rate_enabled '0'
+	option notify_limit_sms_min_interval '60'
+	option notify_limit_sms_window_enabled '0'
+	option notify_limit_sms_window_start '00:00'
+	option notify_limit_sms_window_end '23:59'
+	option notify_limit_sms_window_action 'defer'
+	option notify_limit_call_rate_enabled '0'
+	option notify_limit_call_min_interval '60'
+	option notify_limit_call_window_enabled '0'
+	option notify_limit_call_window_start '00:00'
+	option notify_limit_call_window_end '23:59'
+	option notify_limit_call_window_action 'defer'
+	option notify_limit_memory_rate_enabled '0'
+	option notify_limit_memory_min_interval '60'
+	option notify_limit_memory_window_enabled '0'
+	option notify_limit_memory_window_start '00:00'
+	option notify_limit_memory_window_end '23:59'
+	option notify_limit_memory_window_action 'drop'
+	option notify_limit_signal_rate_enabled '0'
+	option notify_limit_signal_min_interval '60'
+	option notify_limit_signal_window_enabled '0'
+	option notify_limit_signal_window_start '00:00'
+	option notify_limit_signal_window_end '23:59'
+	option notify_limit_signal_window_action 'drop'
+
 	# 自定义推送文案。留空 = 使用内置默认文案（升级后未被改动的项仍跟随版本更新）。
 	# UCI 的 option 值是单行的，多行文案统一写成 \n 转义，LuCI 页面会自动转换；
 	# 直接手改 UCI 时也按同样的转义写（后端按 \n / \t / \r / \\ 还原）。
@@ -169,7 +215,6 @@ option dns_exclusive '1'
 	option notify_tpl_call ''               # 留空用默认「来电\n{content}」
 	option notify_tpl_signal ''             # 留空用默认 '{content}'（正文由后端组装）
 	option notify_tpl_memory ''             # 留空用默认「短信存储空间已满\n后果：清理前可能收不到新短信」
-	option notify_tpl_batch ''              # 批量汇总时的首行标题（合并窗口已移除，当前不会触发）
 	# QQ 富文本短信卡片（仅 QQ Markdown 生效；企业微信/纯文本仍用 notify_tpl_sms）。
 	# 占位符同通用模板；留空=内置默认卡片；写成 {body} 可改回通用转换。
 	option notify_tpl_qq_sms_md ''

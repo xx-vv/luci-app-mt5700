@@ -818,6 +818,11 @@ var AtUci = {
 	_dirty: false,
 	_beforeUnload: null,
 
+	// 查询脏标记（抽屉打开时记录基线，放弃关闭时据此决定是否清除）
+	isDirty: function () {
+		return this._dirty;
+	},
+
 	// 标记当前页面存在未保存更改，并在离开时提示（等价 LuCI 自带行为）
 	markDirty: function () {
 		if (this._dirty) return;
@@ -884,6 +889,12 @@ var AtUci = {
 				}
 				throw err;
 			});
+		}).catch(function (err) {
+			// 把阶段性结果附在错误上：调用方（配置抽屉）据此区分
+			// 「save 已落盘但 apply 失败」与「尚未落盘」，放弃修改时
+			// 前者需要把回滚后的原值重新 save 到磁盘，不能只回滚内存暂存。
+			if (err && typeof err === 'object') err.uciSaveResult = result;
+			throw err;
 		});
 	}
 };
