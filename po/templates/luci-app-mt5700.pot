@@ -47,8 +47,8 @@ msgstr "服务配置"
 msgid "移动网络"
 msgstr "移动网络"
 
-msgid "5G 模组管理"
-msgstr "5G 模组管理"
+msgid "MT5700管理"
+msgstr "MT5700管理"
 
 msgid "通知日志"
 msgstr "通知日志"
