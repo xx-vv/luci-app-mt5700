@@ -40,7 +40,7 @@ var rpcAt = L.rpc.declare({
  * + fork nc + rpcd 往返），status 页一轮 25 条命令就白付 400ms 以上。
  * 合批后一轮只付一次桥开销，AT 通道仍然是单通道串行（互斥语义不变）。
  *
- * 返回 { success, items: [{cmd, success, data|error|cause}] }；
+ * 返回 { success, items: [{cmd, success, data|error|cause, at_ms}] }；
  * 批量整体失败（后端不可用 / 熔断）时 success 为 false，调用方退回逐条发送。
  */
 var rpcAtBatch = L.rpc.declare({
@@ -425,7 +425,7 @@ ATClient.prototype.pollEvents = function () {
 ATClient.prototype.handlePush = function (ev) {
 	if (!ev || typeof ev.type !== 'string') return;
 	if (ev.type === 'raw_data' && typeof ev.data === 'string') {
-		this.dispatchRawData(ev.data);
+		this.dispatchRawData(ev.data, ev.at_ms);
 		return;
 	}
 	if (['incoming_call', 'new_sms', 'pdcp_data', 'memory_full', 'cellscan', 'urc_data'].indexOf(ev.type) >= 0) {
@@ -518,11 +518,21 @@ ATClient.prototype.sendCommand = function (command, timeoutMs, retried) {
 					});
 				}
 				self.noteCommandFailure(resp.cause);
-				return { success: false, error: resp.error || '命令执行失败', cause: resp.cause };
+				/* 失败应答同样带 at_ms（后端无条件注入）：终端要把「哪一刻发出的
+				 * 命令失败了」如实写进历史，丢掉它只会让失败用例显示「时间未知」。
+				 * 客户端侧失败（熔断 / 超时）没有后端时刻，保持 undefined 是刻意的。 */
+				return {
+					success: false,
+					error: resp.error || '命令执行失败',
+					cause: resp.cause,
+					at_ms: resp.at_ms
+				};
 			}
 			self.noteCommandSuccess();
 			self.markBackendUp();
-			return { success: true, data: resp.data };
+			/* at_ms：后端 nettime 权威时刻（NTP 优先）。要把命令应答当业务时间
+			 * 展示的页面（终端回显、信号采样等）用它，不用浏览器时钟。 */
+			return { success: true, data: resp.data, at_ms: resp.at_ms };
 		}).catch(function (err) {
 			self.noteCommandFailure('timeout');
 			return { success: false, error: (err && err.message) || '命令执行失败', cause: 'timeout' };
@@ -539,9 +549,11 @@ ATClient.prototype.sendCommand = function (command, timeoutMs, retried) {
  * 但会尊重整体不可用 / 熔断状态，条件与 sendCommand 完全一致。
  *
  * 返回 Promise<数组|null>：
- *   数组 —— 与入参顺序一致的 [{cmd, success, data?, error?, cause?}]；
+ *   数组 —— 与入参顺序一致的 [{cmd, success, data?, error?, cause?, at_ms?}]；
  *   null —— 批量整体不可用（通道降级 / 熔断 / 超时 / RPC 失败），
  *           调用方应退回逐条 sendCommand，行为与改动前完全一致。
+ * 逐条的 at_ms 是后端 nettime 权威时刻，与 sendCommand 同口径透传，
+ * 调用方不得丢弃（趋势图横轴等业务时间依赖它，丢了只能退化成序号占位）。
  *
  * 预算取 24000ms：ucode 侧整批硬超时是 18s，必须比它大，
  * 才能先拿到后端/桥给的明确结论（哪几条超时），而不是浏览器先 abort。
@@ -577,7 +589,11 @@ ATClient.prototype.sendBatch = function (commands, timeoutMs) {
 				success: it.success !== false,
 				data: it.data,
 				error: it.error,
-				cause: it.cause
+				cause: it.cause,
+				/* 逐条带上后端 nettime 时刻：批量是 status 页的取数主干，
+				 * 这里吞掉 at_ms 会让下游（趋势图横轴）一律退化成序号占位。
+				 * 整批超时那条没有后端应答，at_ms 保持 undefined。 */
+				at_ms: it.at_ms
 			});
 		}
 		return out;
@@ -784,9 +800,10 @@ ATClient.prototype.offConnectionStateChange = function (cb) {
 	if (i >= 0) this.stateCallbacks.splice(i, 1);
 };
 
-ATClient.prototype.dispatchRawData = function (text) {
+ATClient.prototype.dispatchRawData = function (text, atMs) {
 	var self = this;
-	var parsed = parseRawData(text);
+	/* atMs 是后端 nettime 给的权威上报时刻，透传给解析层给 URC 打业务时间。 */
+	var parsed = parseRawData(text, atMs);
 	for (var i = 0; i < parsed.length; i++) {
 		self.emitPush({ success: true, type: 'urc_data', data: parsed[i] });
 	}
@@ -845,12 +862,25 @@ var AtUci = {
 		}
 	},
 
-	// 查询该配置是否存在待应用变更（rpcd uci.changes）
+	// 查询 rpcd 侧是否存在待应用变更（诊断用）。
+	//
+	// 注意：L.uci.changes 在 luci.js 26.x 里没有声明 params，传进去的参数只会被当成
+	// 「私有参数」丢掉，ubus 收到的是空 params → rpcd 返回的是**按配置分组的大表**
+	// （{mt5700d: [...], ...}），不是扁平数组。所以这里必须兼容两种形态，且绝不能
+	// 用它的结果决定「要不要保存」——表单改动先落在浏览器状态里，只有 uci.save()
+	// 才写进 delta；按 delta 判空会在刚打开页面时把用户的改动静默跳过。
 	uciHasChanges: function (section) {
-		return L.uci.changes(section).then(function (changes) {
-			return Array.isArray(changes) ? changes.length > 0 : !!changes;
+		return L.uci.changes().then(function (changes) {
+			if (Array.isArray(changes))
+				return changes.length > 0;
+			if (changes && typeof changes === 'object') {
+				var mine = changes[section];
+				if (Array.isArray(mine))
+					return mine.length > 0;
+				return Object.keys(changes).length > 0;
+			}
+			return !!changes;
 		}).catch(function () {
-			// changes 不可用时不阻断主流程，按「有变更」处理
 			return true;
 		});
 	},
@@ -860,35 +890,20 @@ var AtUci = {
 	 * 返回 { applied: bool, saved: bool, appliedSkipped: bool }
 	 */
 	uciSave: function (section, opts) {
-		var options = opts || {};
+		var self = this;
 		var result = { saved: false, applied: false, appliedSkipped: false, changes: null };
 
-		return this.uciHasChanges(section).then(function (has) {
-			result.changes = has;
-			if (!has && options.skipWhenClean !== false) {
-				// 无待应用变更：不需要 save/apply，直接视为已生效
-				result.saved = true;
-				result.appliedSkipped = true;
-				return result;
-			}
-			return L.uci.save(section).then(function () {
-				result.saved = true;
-				return L.uci.apply(false, true);
-			}).then(function () {
-				result.applied = true;
-				return result;
-			}, function (err) {
-				// ubus 状态码 5 = NO_DATA：rpcd 未收到待应用数据，通常表示
-				// 变更已在上一轮 commit，配置实际已生效，不视为失败。
-				var code = err && err.code;
-				var msg = (err && err.message) || '';
-				if (code === 5 || /未收到数据|No data|NO_DATA/i.test(msg)) {
-					result.applied = true;
-					result.appliedSkipped = true;
-					return result;
-				}
-				throw err;
-			});
+		// 始终 save → apply：save 只把浏览器暂存的改动下发给 rpcd（uci/set），
+		// apply 才做 commit + 触发 procd reload。不做「有没有变更」的前置判断，
+		// 否则页面刚打开、rpcd delta 为空时会把用户这一轮的编辑直接跳过。
+		return L.uci.save(section).then(function () {
+			result.saved = true;
+			return L.uci.apply(10);
+		}).then(function () {
+			result.applied = true;
+			return result;
+		}, function (err) {
+			return self.recoverNoData(err, result);
 		}).catch(function (err) {
 			// 把阶段性结果附在错误上：调用方（配置抽屉）据此区分
 			// 「save 已落盘但 apply 失败」与「尚未落盘」，放弃修改时
@@ -896,6 +911,35 @@ var AtUci = {
 			if (err && typeof err === 'object') err.uciSaveResult = result;
 			throw err;
 		});
+	},
+
+	/**
+	 * 兜住 rpcd `uci/apply` 的 UBUS_STATUS_NO_DATA(5)。
+	 *
+	 * 语义：rpcd 的 rpc_uci_apply_access() 遍历会话 delta，只统计**非空**配置
+	 * 文件；一个都没有就直接返回 5（rpcd uci.c）。delta 为空 = 磁盘已是最新，
+	 * 这一轮确实没有需要提交的差异，保存是成功的。
+	 *
+	 * 为什么可以判定为成功而不是吞错：L.uci.save() 里每条 uci/set 都是
+	 * reject:true，任何一条没写进 delta 都会先 reject，根本走不到 apply；
+	 * 能走到 apply 说明 set 阶段全成功。
+	 *
+	 * 为什么按文案兜底：LuCI 的 RPCError **不带 code 字段**，ubus 码只在
+	 *   `RPC call to uci/apply failed with ubus code 5: 无已接收数据`
+	 * 这段文字里；且文案随语言/版本变化（未收到数据 / 无已接收数据 / No data），
+	 * 旧实现只匹配「未收到数据」，在 26.x 上必然漏判（本次实机即此）。
+	 */
+	recoverNoData: function (err, result) {
+		// apply 的正常返回是 0（空 reply → rpc 层折成 0）；confirm 轮询失败时
+		// LuCI 直接 reject 数字，这里一并按码处理。
+		var code = (typeof err === 'number') ? err : (err && err.code);
+		var msg = (err && (err.message || err.msg)) || String(err == null ? '' : err);
+		var noData = code === 5 ||
+			/no[ _-]?data|未收到数据|无已接收数据/i.test(msg);
+		if (!noData) throw err;
+		result.applied = true;
+		result.appliedSkipped = true;
+		return result;
 	}
 };
 
@@ -974,6 +1018,25 @@ function formatDuration(seconds, showDays) {
 	var h2 = Math.floor(seconds / 3600);
 	var m2 = Math.floor((seconds % 3600) / 60);
 	return h2 + '时' + m2 + '分' + (seconds % 60) + '秒';
+}
+
+/*
+ * 把后端给的毫秒时刻（nettime::now_ms，NTP 优先）格式化为本地时区时刻串。
+ *
+ * 关键：入参必须来自后端 epoch，不能用 `serverClock(Date.now())` —— 那等于
+ * 绕回浏览器时钟，正是本函数要消灭的用法。`new Date(ms)` 在这里只对**已确定的
+ * 时刻**做格式化（与 logs.js 的 epoch 展示同一口径），不读取"现在几点"。
+ * 后端没给（老固件 / 应答缺字段）时返回 null，调用方据此显示"时间未知"，
+ * 而不是拿浏览器时钟冒充。
+ */
+function serverClock(atMs, withDate) {
+	if (atMs == null || !isFinite(atMs)) return null;
+	var d = new Date(Number(atMs));
+	if (isNaN(d.getTime())) return null;
+	function p2(n) { return (n < 10 ? '0' : '') + n; }
+	var hm = p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+	if (!withDate) return hm;
+	return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + hm;
 }
 
 var NR_BANDS = {
@@ -1074,7 +1137,7 @@ function psRegText(stat) {
 
 /* ---- raw_data 拆分（^PDCPDATAINFO / URC） ---- */
 
-function parseRawData(text) {
+function parseRawData(text, atMs) {
 	var out = [];
 	var re = /\^PDCPDATAINFO:\s*([^\r\n]+)/g;
 	var m, rest = text;
@@ -1093,8 +1156,8 @@ function parseRawData(text) {
 		} else if (line.indexOf('^CERSSI:') === 0) {
 			out.push({ type: 'CERSSI', raw: line });
 		} else if (line.indexOf('^REJINFO') === 0) {
-			// 网络拒绝原因主动上报，解析后进 REJINFO 类型
-			out.push({ type: 'REJINFO', raw: line, parsed: Parse.parseRejInfo(line) });
+			// 网络拒绝原因主动上报；atMs 是后端 nettime 给的权威上报时刻
+			out.push({ type: 'REJINFO', raw: line, parsed: Parse.parseRejInfo(line, atMs) });
 		}
 	}
 	return out;
@@ -1651,6 +1714,7 @@ var Mt5700d = {
 	parseTemperature: parseTemperature,
 	formatFlow: formatFlow,
 	formatDuration: formatDuration,
+	serverClock: serverClock,
 	parseHCSQ: parseHCSQ,
 	parseMONSC: parseMONSC,
 	parseHFREQINFO: parseHFREQINFO,

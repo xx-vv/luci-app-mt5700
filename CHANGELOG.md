@@ -6,8 +6,8 @@
 *12 个原生 LuCI 高性能视图 + Rust / Tokio 常驻高并发后端 · 单包融合交付*
 
 <p align="center">
-  <a href="https://github.com/LianXia233/luci-app-mt5700/releases"><img src="https://img.shields.io/badge/Release-v2.0.2-2563eb?style=flat-square&logo=github" alt="Latest Version" /></a>
-  <img src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC%E6%80%BB%E6%95%B0-91%20Releases-16a34a?style=flat-square" alt="Total Versions" />
+  <a href="https://github.com/LianXia233/luci-app-mt5700/releases"><img src="https://img.shields.io/badge/Release-v2.1.3-2563eb?style=flat-square&logo=github" alt="Latest Version" /></a>
+  <img src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC%E6%80%BB%E6%95%B0-92%20Releases-16a34a?style=flat-square" alt="Total Versions" />
   <img src="https://img.shields.io/badge/%E8%BF%AD%E4%BB%A3%E5%91%A8%E6%9C%9F-70%20Days-0891b2?style=flat-square" alt="Timespan" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0--only-ea580c?style=flat-square" alt="License" /></a>
 </p>
@@ -17,8 +17,8 @@
 ---
 
 > [!TIP]
-> **最新正式版：[v2.0.2](https://github.com/LianXia233/luci-app-mt5700/releases/tag/v2.0.2)（2026-11-25）**  
-> **mt5700d 常驻后端与单包融合交付**：可执行文件、服务名、配置与前端资源统一为 `mt5700d`；升级自动迁移既有配置与历史数据，服务启动链路修复。升级后建议按 `Ctrl + F5` 强制刷新浏览器缓存。
+> **最新正式版：[v2.1.3](https://github.com/LianXia233/luci-app-mt5700/releases/tag/v2.1.3)（2026-11-27）**  
+> **夜间模式配置抽屉可读性修复（#63）**：`config-drawer.js` 改用 `--mt5700-float-bg` 兜底并显式适配 `html.at-dark` 背景与文字、`color:inherit` 关闭按钮及暗色错误提示/取消按钮对比度，解决普通模式夜间主题下配置抽屉「浅底浅字」看不见的问题。升级后请按 `Ctrl + F5` 强制刷新浏览器缓存。
 
 ### 🧭 阶段速览与导航
 
@@ -46,6 +46,57 @@
 | `🔧 工程` | 基建运维 | 8 | CI/CD 流水线构建、权限门禁、自动化测试套件扩充 |
 | `⚡ 性能` | 性能调优 | 4 | 缓存机制、RPC 批量合并、减少非必要线程阻塞与耗时 |
 | `🛡️ 安全` | 安全加固 | 3 | 注入风险防御、高危操作分级确认、第三方依赖审计 |
+
+---
+
+## 🔧 未发布（Unreleased）
+
+| 版本 | 发布日期 | 分类 | 主要改进与变更摘要 |
+| :--- | :---: | :--- | :--- |
+| 未发布 | 2026-11-27 | `🎨 界面` `♻️ 重构` | **重构 GitHub Pages 文档站（`docs/`）**：剥离 `cdn.tailwindcss.com` 运行时编译依赖，拆分为独立 `docs/index.html` + `docs/assets/style.css` + `docs/assets/app.js`；补齐站内日间/夜间模式一键切换、外观透光度调节与纯享壁纸模式；交互控制台更新为真实 MT5700M 9 条高频只读 AT 指令、HiDPI 速率波形、7 通道点击高亮、扫频/短信页内弹窗（替代 `alert`/`prompt`）；实机图赏支持分类筛选与键盘 Lightbox 浏览；下载矩阵补齐 `aarch64_generic` 并修正 Debian 链接指向 `debian-v1.32.13` |
+
+---
+
+## 🚀 v2.1.3 · 夜间模式配置抽屉可读性修复
+
+| 版本 | 发布日期 | 分类 | 主要改进与变更摘要 |
+| :--- | :---: | :--- | :--- |
+| v2.1.3 | 2026-11-27 | `🐛 修复` `🎨 界面` | **修复普通模式夜间配置抽屉文字看不见（#63）**：`config-drawer.js` 此前将抽屉背景兜底写为未定义的 `--at-panel-bg`（在普通模式下回落为浅灰 `#f7f7fa`），而文字继承了 `at.css` / `mt5700.css` 在 `html.at-dark` 下的浅色 `--at-text` / `--mt5700-text`，导致暗色主题下出现「浅底浅字」无法辨认。改用 `--mt5700-float-bg` 兜底并补充 `html.at-dark .mt5700-drawer` 暗色背景/文字、`color:inherit` 关闭按钮及暗色错误提示/取消按钮对比度，同步更新 `tests/config-drawer-test.js` 回归断言 |
+
+---
+
+## 🚀 v2.1.2 · AT 命令库与终端命令区重构
+
+| 版本 | 发布日期 | 分类 | 主要改进与变更摘要 |
+| :--- | :---: | :--- | :--- |
+| v2.1.2 | 2026-11-27 | `✨ 新增` `🎨 界面` | **AT 终端命令库扩展**：维护者确认的 9 条常用只读命令（信号强度 / 版本 / SIM 状态 / ICCID / IMSI / 网络注册 / 基站信息 / 网络时间 / IMEI）直接展示为带图标、命令预览与「只读」标识的大卡片；其余低频命令按手册章节归为设备与身份、SIM 与电话本、网络与注册、信号与小区、拨号与地址、时钟与短信、诊断与日志 8 组，收纳进可折叠面板，支持命令名 / 指令 / 用途关键字过滤；重启协议栈、飞行模式、模组重启、流量清零 4 条写操作独立成组并标红，确认文案升级为「谨慎操作」。移除原「已保存的命令 / 来自本机浏览器 localStorage」卡片，常用命令区独占整行按 3×3 对齐，卡片内边距与图标适度放大，输入行只保留发送 / 清空 |
+| v2.1.2 | 2026-11-27 | `🔧 工程` | 命令语法逐条对照 V200R001C20 手册核对，收录规则两条：无需额外参数、应答能在后端 2 秒预算内完整返回。`AT+COPS=?` 与 `AT+COPN` 实测超时（后者更隐蔽：被中途截断的半截列表仍报 `success:true`）故不收录。新增 `tests/terminal-command-test.js`（66 项源码断言）与 `tests/terminal-render-test.js`（19 项 DOM 行为断言），锁定命令规模、语法形态、危险标识、搜索过滤、发送中禁用、暗色 hover 与三档响应式；`MT5700_CSS_VERSION` 2.46.10 → 2.46.12 确保样式表真正失效 |
+
+---
+
+## 🚀 v2.1.1 · 时间口径收敛与夜间模式可读性
+
+> 前端业务时间统一改为消费后端 `nettime` 的权威时刻，手机时区或系统时间设错时不再与日志、通知对不上；同时修掉「半套暗色规则」导致的夜间小字看不清。协议向后兼容，老前端忽略 `at_ms` 即可。
+
+| 版本 | 发布日期 | 分类 | 主要改进与变更摘要 |
+| :--- | :---: | :--- | :--- |
+| v2.1.1 | 2026-11-27 | `🐛 修复` | **时间口径收敛**：后端 `at` 应答与 `raw_data` URC 上报注入 `at_ms`（`nettime::now_ms()`，NTP 优先、设备时钟回退）；前端新增 `serverClock(atMs)` 统一格式化后端 epoch，无有效值显示占位、不回退浏览器时钟。趋势图横轴、终端命令历史、REJINFO 上报打戳、REJINFO 卡片展示 4 处业务时间改用权威时刻，手机时区/系统时间设错时仍与日志、通知同源；协议向后兼容，老前端忽略 `at_ms` 即可。失败应答与批量接口同样透传 `at_ms`（`sendBatch` 逐条、status 页预取缓存两个分支都保留），避免 AT 报错条目显示「时间未知」、趋势图横轴退化成序号占位 |
+| v2.1.1 | 2026-11-27 | `🎨 界面` | **夜间模式可读性**：补齐日志级别/方向/来源徽章与 `logscroll-btn` 的 `.at-dark` 提亮规则，`--mt5700-text-muted` 暗色值由 `#64748b` 提亮到 `#8fa3b8`（暗底对比度约 3.6:1 → 6.6:1），模组设置页/拨号页局部样式补 `html.at-dark` 分支，信号档位标签不透明度 0.5 → 0.85。此前 logcat 分类徽章已有 21 条暗色规则但这几组漏写，10~11px 小字对比度仅约 2~3:1。`MT5700_CSS_VERSION` 2.46.9 → 2.46.10，确保升级后浏览器重新拉取样式表（`uhttpd` 静态资源恒给 `Last-Modified: 1970`，不递增版本戳会「代码已改、界面未变」） |
+| v2.1.1 | 2026-11-27 | `🔧 工程` | 新增 `tests/server-time-test.js`（24 项断言）锁定后端 `at_ms` 注入、前端透传链（含失败应答与批量/预取路径）、4 处违规点禁用浏览器时钟；`global-css-test.js` 第 7 节逐个断言徽章暗色规则成对出现；`usage-source-test.js` 的 `MT5700_CSS_VERSION` 基线同步到 2.46.10；`AGENTS.md` 新增第七章「时间口径规则」固化唯一墙上时间入口与三类时间分流。`checks.yml` 的 Rust 作业显示名改回「Rust 单元测试」，与 `main` 分支保护要求的必需检查 context 对齐（名称不一致曾使 PR 恒为 `blocked`，四项 CI 全绿也合不了） |
+
+---
+
+## 🚀 v2.1.0 · QQ 机器人扫码绑定
+
+> 用手机 QQ 扫码一次搞定「取凭据 + 绑 openid」，替代原先「去开放平台抄 AppID/AppSecret → 再给机器人发一条消息」的两步流程。本版同时修掉扫码链路在 5G 弱网、LuCI 26 与升级重启场景下实机暴露的全部缺陷。
+
+| 版本 | 发布日期 | 分类 | 主要改进与变更摘要 |
+| :--- | :---: | :--- | :--- |
+| v2.1.0 | 2026-11-27 | `✨ 新增` `🛡️ 安全` `🐛 修复` | QQ 通知卡片新增「扫码绑定」：扫码一次取回 AppID/AppSecret/openid；后端建任务/出码/轮询，AES-256-GCM 本地解密后直写 UCI，前端只拿 AppID 与 openid。修复保存覆盖 AppSecret、错误串回显明文密钥、并发出死码、终态失败空转、弱网 6 秒放弃、LuCI 26 模块工厂与保存误报 NO_DATA、升级后 reload 不换进程等问题 |
+
+> **扫码绑定链路**：`POST /lite/create_bind_task`（32B 随机密钥）→ 二维码指向官方 `connect.html`（`task_id` + `_wv=2`）→ 每 2s `POST /lite/poll_bind_result` → `status=2` 时用 AES-256-GCM（`IV(12)‖CT‖TAG(16)`）本地解密 → `uci set/commit` 写入 `qq_app_id / qq_app_secret / qq_target_type / qq_target_id` → 热替换 QQ 通道，无需重启。协议字段与超时对齐 `@tencent-connect/qqbot-connector@1.2.0`。
+>
+> **实机结论（ImmortalWRT SNAPSHOT / aarch64）**：二维码有效期实测约 150s；扫码 → 凭据落盘 → 测试推送成功；配置文件权限收紧为 0600；扫码后按「保存」不会覆盖新密钥。
 
 ---
 
